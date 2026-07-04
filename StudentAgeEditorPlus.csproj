@@ -1,0 +1,80 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AssemblyName>StudentAgeEditorPlus</AssemblyName>
+    <RootNamespace>StudentAgeEditorPlus</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Version>0.1.0</Version>
+
+    <!-- BepInEx 不需要这些, 保持 plugins 目录干净 -->
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <DebugType>portable</DebugType>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+
+    <!-- 游戏根目录(相对本工程: _modsrc/StudentAgeEditorPlus/ -> 上两级) -->
+    <GameRoot>$(MSBuildProjectDirectory)\..\..</GameRoot>
+    <ManagedDir>$(GameRoot)\StudentAge_Data\Managed</ManagedDir>
+    <BepInExCore>$(GameRoot)\BepInEx\core</BepInExCore>
+    <PluginOutDir>$(GameRoot)\BepInEx\plugins\StudentAgeEditorPlus</PluginOutDir>
+  </PropertyGroup>
+
+  <!-- BepInEx / Harmony -->
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>$(BepInExCore)\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInExCore)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- 游戏 / Unity 程序集 -->
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(ManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(ManagedDir)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(ManagedDir)\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(ManagedDir)\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(ManagedDir)\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(ManagedDir)\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- 构建后把 DLL 拷进 plugins/StudentAgeEditorPlus/ -->
+  <Target Name="CopyToPlugins" AfterTargets="Build">
+    <MakeDir Directories="$(PluginOutDir)" />
+    <Copy SourceFiles="$(OutputPath)\$(AssemblyName).dll"
+          DestinationFolder="$(PluginOutDir)"
+          SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="[StudentAgeEditorPlus] 已部署到 $(PluginOutDir)\$(AssemblyName).dll" />
+  </Target>
+
+</Project>
