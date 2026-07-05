@@ -697,9 +697,14 @@ namespace StudentAgeEditorPlus.Patches
                 //      "不在场"的人身上，站位错乱。
                 // 修复：把起始句换成一个"补齐了上下文"的副本（复用编辑器自身的
                 // FindBgId/FindRoles 回溯逻辑），编辑器内存里的真实数据不动。
-                talkMap[curSelect.id] = BuildStartTalkWithContext(t, curSelect);
+                // 第二轮增强（用户确认需要）：不只补站位，还沿剧情链回溯还原
+                // 每个人物的服装/发型/姿势/朝向/剪影/缩放/累计位移。
+                // 回溯用的 optionCfgs 必须是编辑器原始字段（与 FindRoles 同源），
+                // 不能用下面合并过原版的 optionMap。
+                var optionCfgsRaw = t.Field("optionCfgs").GetValue<Dictionary<int, OptionCfg>>();
+                talkMap[curSelect.id] = BuildStartTalkWithContext(t, curSelect, talkList, optionCfgsRaw);
 
-                var optionMap = Merge(t.Field("optionCfgs").GetValue<Dictionary<int, OptionCfg>>(), Cfg.OptionCfgMap);
+                var optionMap = Merge(optionCfgsRaw, Cfg.OptionCfgMap);
                 var personMap = t.Field("personCfgs").GetValue<Dictionary<int, PersonCfg>>(); // 已含原版
                 var bgMap = Merge(t.Field("customBgCfgs").GetValue<Dictionary<int, BgCfg>>(), Cfg.BgCfgMap);
                 var cgMap = Merge(t.Field("customCGCfgs").GetValue<Dictionary<int, CGCfg>>(), Cfg.CGCfgMap);
@@ -723,7 +728,7 @@ namespace StudentAgeEditorPlus.Patches
                 if (!_limitHintShown)
                 {
                     _limitHintShown = true;
-                    ToastHelper.Toast("从当前对话开始预览，点击画面会继续往后播放，右键随时关闭；前文人物已自动补齐站位（服装/表情按默认显示）");
+                    ToastHelper.Toast("从当前对话开始预览，点击画面会继续往后播放，右键随时关闭；前文人物的服装、站位、朝向已自动还原");
                 }
             }
             catch (Exception e)
@@ -754,13 +759,18 @@ namespace StudentAgeEditorPlus.Patches
         /// 生成起始句的"补齐上下文"副本：
         ///   - bg<=0 时用编辑器的 FindBgId(talkId) 回溯继承背景；
         ///   - 用编辑器的 FindRoles(talkId) 算出此刻在场的人物及方位，为
-        ///     "不是本句进场"的人合成 [人物, 1001放置, 层级1, 方位] 指令，
-        ///     插在本句原有动作之前（瞬间站定，无入场动画）。
+        ///     "不是本句进场"的人合成放置指令 + 前文状态还原指令：
+        ///     服装(3006)/发型(3014)/姿势(3000)/剪影(3012)/朝向(3005/3007
+        ///     翻转次数奇偶)/放大(3003 次数)/累计位移(3004/3008 偏移和)。
+        ///     状态沿剧情链倒序回溯（WalkChainBackward + CollectRoleStates），
+        ///     遇到该人的进场/退场即停（更早的状态属于上一个出场周期）。
         /// 仅修改传给预览器的副本；roles 列表为浅拷贝 + 前插，原有条目
         /// 与编辑器共享引用但双方都只读，安全。
-        /// 已知残留：前文人物的服装/表情/累计位移不还原，只补站位。
+        /// 已知残留：纵向累计位移以 0.4 秒快速滑动呈现（纵移指令无时长参数）；
+        /// 表情/跳跃/抖动等瞬时动画不回放（真实游戏里本就不跨句残留）。
         /// </summary>
-        private static TalkCfg BuildStartTalkWithContext(Traverse t, TalkCfg cur)
+        private static TalkCfg BuildStartTalkWithContext(
+            Traverse t, TalkCfg cur, List<TalkCfg> talkList, Dictionary<int, OptionCfg> optionCfgs)
         {
             var copy = new TalkCfg
             {
@@ -822,14 +832,60 @@ namespace StudentAgeEditorPlus.Patches
                         }
                     }
 
+                    // 需要还原状态的人物集合
+                    var restoreIds = new HashSet<int>();
+                    foreach (var kvp in inScene)
+                    {
+                        if (!entersThisTalk.Contains(kvp.Key)) restoreIds.Add(kvp.Key);
+                    }
+
+                    // 沿剧情链回溯累计每人的前文状态（失败则回退为"仅放置"）
+                    Dictionary<int, RoleChainState> states = null;
+                    if (restoreIds.Count > 0)
+                    {
+                        try
+                        {
+                            var chain = WalkChainBackward(talkList, optionCfgs, cur);
+                            states = CollectRoleStates(chain, restoreIds);
+                        }
+                        catch (Exception e)
+                        {
+                            Plugin.Log.LogWarning($"[EvtTalkPreview] 状态回溯失败，回退为仅补站位: {e.Message}");
+                        }
+                    }
+
                     int insertAt = 0;
+                    void Prepend(List<float> entry) => copy.roles.Insert(insertAt++, entry);
+
                     foreach (var kvp in inScene)
                     {
                         if (entersThisTalk.Contains(kvp.Key)) continue;
-                        copy.roles.Insert(insertAt++, new List<float>
-                        {
-                            kvp.Key, 1001f, 1f, (float)kvp.Value
-                        });
+                        int pid = kvp.Key;
+
+                        // 1) 放置到方位槽（瞬间站定）
+                        Prepend(new List<float> { pid, 1001f, 1f, (float)kvp.Value });
+
+                        if (states == null || !states.TryGetValue(pid, out var st)) continue;
+
+                        // 2) 持久外观状态（服装/发型/姿势/剪影）
+                        if (st.cloth >= 0) Prepend(new List<float> { pid, 3006f, st.cloth });
+                        if (st.hair >= 0) Prepend(new List<float> { pid, 3014f, st.hair });
+                        if (st.pose >= 0) Prepend(new List<float> { pid, 3000f, st.pose });
+                        if (st.shadow == 1) Prepend(new List<float> { pid, 3012f });
+
+                        // 3) 朝向：翻转是切换语义，奇数次 = 最终是翻转态（3007 瞬间翻转）
+                        if (st.flipCount % 2 == 1) Prepend(new List<float> { pid, 3007f });
+
+                        // 4) 放大：3003 每次固定 ×1.1（引擎语义），按次数重放
+                        for (int i = 0; i < st.scaleCount; i++)
+                            Prepend(new List<float> { pid, 3003f });
+
+                        // 5) 累计位移。横移带时长参数 → 0.011 秒近似瞬移；
+                        //    纵移无时长参数 → 引擎默认 0.4 秒快速滑动（已知残留）。
+                        //    顺序必须横移在前：两条 tween 的终点快照决定了
+                        //    此顺序下最终位置必然正确。
+                        if (st.sumX != 0f) Prepend(new List<float> { pid, 3004f, st.sumX, 0f, 0f, 0.011f });
+                        if (st.sumY != 0f) Prepend(new List<float> { pid, 3008f, st.sumY });
                     }
                 }
             }
@@ -837,6 +893,131 @@ namespace StudentAgeEditorPlus.Patches
 
             return copy;
         }
+
+        /// <summary>某人物沿剧情链回溯累计出的前文状态。</summary>
+        private sealed class RoleChainState
+        {
+            /// <summary>已遇到该人的进场/退场，停止累计（更早的状态属于上个出场周期）。</summary>
+            public bool closed;
+            public float sumX;
+            public float sumY;
+            public int cloth = -1;   // -1=未见（0 是合法的默认装编号）
+            public int hair = -1;
+            public int pose = -1;
+            public int flipCount;    // 3005/3007 出现次数，奇偶定朝向
+            public int scaleCount;   // 3003 出现次数（每次固定 ×1.1）
+            public int shadow = -1;  // -1=未见 1=剪影 0=正常
+        }
+
+        /// <summary>
+        /// 沿剧情链从起始句往前走，返回按时间倒序的前驱对话序列（不含起始句）。
+        /// 前驱查找与停止条件完全复刻编辑器 FindRoles（反编译 L588-615）：
+        /// nextTalk/nextTalk2 反查 → 查不到再从选项反查；停止于环（visited）、
+        /// 无前驱、前驱 bg==-1、换背景边界（含原版"与起始句 bg 比较"的怪癖，
+        /// 保持与编辑器小舞台的在场判定一致）。
+        /// </summary>
+        private static List<TalkCfg> WalkChainBackward(
+            List<TalkCfg> talks, Dictionary<int, OptionCfg> optionCfgs, TalkCfg start)
+        {
+            var result = new List<TalkCfg>();
+            if (talks == null || start == null || start.bg == -1) return result;
+
+            int lastBg = start.bg;
+            int curId = start.id;
+            var visited = new HashSet<int>();
+            while (true)
+            {
+                if (visited.Contains(curId)) return result;
+                visited.Add(curId);
+
+                int id = curId; // 闭包快照
+                var prev = talks.Find(cfg => cfg != null && cfg.id != id &&
+                    (ContainsSafe(cfg.nextTalk, id) || ContainsSafe(cfg.nextTalk2, id)));
+
+                if (prev == null && optionCfgs != null && optionCfgs.Count > 0)
+                {
+                    int optionId = 0;
+                    foreach (var o in optionCfgs)
+                    {
+                        if (o.Value != null &&
+                            (ContainsSafe(o.Value.talkId, id) || ContainsSafe(o.Value.talkId2, id)))
+                        {
+                            optionId = o.Key;
+                            break;
+                        }
+                    }
+                    if (optionId != 0)
+                    {
+                        prev = talks.Find(cfg => cfg != null && ContainsSafe(cfg.option, optionId));
+                    }
+                }
+
+                if (prev == null || prev.bg == -1) return result;
+                // 原版怪癖照抄：右侧比较的是起始句的 bg（而非上一格的 bg）
+                if (prev.bg > 0 && lastBg > 0 && lastBg != start.bg) return result;
+                lastBg = prev.bg;
+
+                result.Add(prev);
+                curId = prev.id;
+            }
+        }
+
+        /// <summary>
+        /// 沿倒序链累计每个人物的前文状态。句内条目倒序遍历（同句"进场→动作"
+        /// 的先后关系才能正确判定）；"倒序首见即最新"适用于服装/发型/姿势/剪影，
+        /// 位移/翻转/放大为累计语义。全员 closed 后提前结束。
+        /// </summary>
+        private static Dictionary<int, RoleChainState> CollectRoleStates(
+            List<TalkCfg> chain, HashSet<int> personIds)
+        {
+            var states = new Dictionary<int, RoleChainState>();
+            foreach (var id in personIds) states[id] = new RoleChainState();
+            int openCount = states.Count;
+
+            foreach (var talk in chain)
+            {
+                if (openCount <= 0) break;
+                if (talk?.roles == null) continue;
+
+                for (int i = talk.roles.Count - 1; i >= 0; i--)
+                {
+                    var e = talk.roles[i];
+                    if (e == null || e.Count < 2) continue;
+                    if (!states.TryGetValue((int)e[0], out var st) || st.closed) continue;
+
+                    int code = (int)e[1];
+                    int type = 0;
+                    if (Cfg.TalkAnimeCfgMap.TryGetValue(code, out var ac)) type = ac.type;
+                    else if (code >= 1001 && code <= 1003) type = 1;
+                    else if (code == 2001 || code == 2002) type = 2;
+
+                    if (type == 1 || type == 2)
+                    {
+                        st.closed = true;
+                        openCount--;
+                        continue;
+                    }
+
+                    switch (code)
+                    {
+                        case 3004: if (e.Count > 2) st.sumX += e[2]; break;
+                        case 3008: if (e.Count > 2) st.sumY += e[2]; break;
+                        case 3006: if (st.cloth < 0 && e.Count > 2) st.cloth = (int)e[2]; break;
+                        case 3014: if (st.hair < 0 && e.Count > 2) st.hair = (int)e[2]; break;
+                        case 3000: if (st.pose < 0 && e.Count > 2) st.pose = (int)e[2]; break;
+                        case 3005:
+                        case 3007: st.flipCount++; break;
+                        // 参数为 0 的 3003 是"×0"的异常用法，不计入
+                        case 3003: if (e.Count <= 2 || e[2] != 0f) st.scaleCount++; break;
+                        case 3012: if (st.shadow < 0) st.shadow = 1; break;
+                        case 3013: if (st.shadow < 0) st.shadow = 0; break;
+                    }
+                }
+            }
+            return states;
+        }
+
+        private static bool ContainsSafe(List<int> list, int v) => list != null && list.Contains(v);
     }
 
     /// <summary>
