@@ -5,7 +5,7 @@
     <AssemblyName>StudentAgeEditorPlus</AssemblyName>
     <RootNamespace>StudentAgeEditorPlus</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
 
     <!-- BepInEx 不需要这些, 保持 plugins 目录干净 -->
     <GenerateDependencyFile>false</GenerateDependencyFile>
