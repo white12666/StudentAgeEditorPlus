@@ -690,6 +690,15 @@ namespace StudentAgeEditorPlus.Patches
                     if (talk != null) talkMap[talk.id] = talk;
                 }
 
+                // 从中间一句开播的两个缺口（用户实测反馈：时而没背景、人物占位乱）：
+                //   ① 背景继承：mod 通常只在第一句/换场景句填 bg，其余 bg=0 表示
+                //      沿用上一句 → 从中间开播时播放器找不到背景；
+                //   ② 前文人物：更早对话里进场的人物没被播到，本句动作作用在
+                //      "不在场"的人身上，站位错乱。
+                // 修复：把起始句换成一个"补齐了上下文"的副本（复用编辑器自身的
+                // FindBgId/FindRoles 回溯逻辑），编辑器内存里的真实数据不动。
+                talkMap[curSelect.id] = BuildStartTalkWithContext(t, curSelect);
+
                 var optionMap = Merge(t.Field("optionCfgs").GetValue<Dictionary<int, OptionCfg>>(), Cfg.OptionCfgMap);
                 var personMap = t.Field("personCfgs").GetValue<Dictionary<int, PersonCfg>>(); // 已含原版
                 var bgMap = Merge(t.Field("customBgCfgs").GetValue<Dictionary<int, BgCfg>>(), Cfg.BgCfgMap);
@@ -714,7 +723,7 @@ namespace StudentAgeEditorPlus.Patches
                 if (!_limitHintShown)
                 {
                     _limitHintShown = true;
-                    ToastHelper.Toast("从当前对话开始预览，点击画面会继续往后播放；更早对话里进场的人物不会出现。右键可随时关闭");
+                    ToastHelper.Toast("从当前对话开始预览，点击画面会继续往后播放，右键随时关闭；前文人物已自动补齐站位（服装/表情按默认显示）");
                 }
             }
             catch (Exception e)
@@ -739,6 +748,94 @@ namespace StudentAgeEditorPlus.Patches
                 }
             }
             return result;
+        }
+
+        /// <summary>
+        /// 生成起始句的"补齐上下文"副本：
+        ///   - bg<=0 时用编辑器的 FindBgId(talkId) 回溯继承背景；
+        ///   - 用编辑器的 FindRoles(talkId) 算出此刻在场的人物及方位，为
+        ///     "不是本句进场"的人合成 [人物, 1001放置, 层级1, 方位] 指令，
+        ///     插在本句原有动作之前（瞬间站定，无入场动画）。
+        /// 仅修改传给预览器的副本；roles 列表为浅拷贝 + 前插，原有条目
+        /// 与编辑器共享引用但双方都只读，安全。
+        /// 已知残留：前文人物的服装/表情/累计位移不还原，只补站位。
+        /// </summary>
+        private static TalkCfg BuildStartTalkWithContext(Traverse t, TalkCfg cur)
+        {
+            var copy = new TalkCfg
+            {
+                audio = cur.audio,
+                bg = cur.bg,
+                check = cur.check,
+                content = cur.content,
+                effect = cur.effect,
+                effect2 = cur.effect2,
+                highlights = cur.highlights,
+                id = cur.id,
+                maxoptions = cur.maxoptions,
+                miniGame = cur.miniGame,
+                nextTalk = cur.nextTalk,
+                nextTalk2 = cur.nextTalk2,
+                option = cur.option,
+                replace = cur.replace,
+                roleIds = cur.roleIds,
+                roleName = cur.roleName,
+                screenEffect = cur.screenEffect,
+                showTxt = cur.showTxt,
+                time = cur.time,
+                vocals = cur.vocals,
+                roles = cur.roles != null
+                    ? new List<List<float>>(cur.roles)
+                    : new List<List<float>>(),
+            };
+
+            // ① 背景继承
+            try
+            {
+                if (copy.bg <= 0)
+                {
+                    int inherited = t.Method("FindBgId", new[] { typeof(int) }).GetValue<int>(cur.id);
+                    if (inherited > 0) copy.bg = inherited;
+                }
+            }
+            catch (Exception e) { Plugin.Log.LogWarning($"[EvtTalkPreview] 背景回溯失败: {e.Message}"); }
+
+            // ② 前文在场人物补齐
+            try
+            {
+                var inScene = t.Method("FindRoles", new[] { typeof(int) })
+                    .GetValue<Dictionary<int, TalkAxis>>(cur.id);
+                if (inScene != null && inScene.Count > 0)
+                {
+                    // 本句自己进场的人物不合成（否则"先放置又淡入"动作重复）
+                    var entersThisTalk = new HashSet<int>();
+                    if (cur.roles != null)
+                    {
+                        foreach (var e in cur.roles)
+                        {
+                            if (e == null || e.Count < 2) continue;
+                            int code = (int)e[1];
+                            bool isEnter = code == 1001 || code == 1002 || code == 1003;
+                            if (Cfg.TalkAnimeCfgMap.TryGetValue(code, out var ac))
+                                isEnter = ac.type == 1; // 配置表为准（type 1 = 进场类）
+                            if (isEnter) entersThisTalk.Add((int)e[0]);
+                        }
+                    }
+
+                    int insertAt = 0;
+                    foreach (var kvp in inScene)
+                    {
+                        if (entersThisTalk.Contains(kvp.Key)) continue;
+                        copy.roles.Insert(insertAt++, new List<float>
+                        {
+                            kvp.Key, 1001f, 1f, (float)kvp.Value
+                        });
+                    }
+                }
+            }
+            catch (Exception e) { Plugin.Log.LogWarning($"[EvtTalkPreview] 人物回溯失败: {e.Message}"); }
+
+            return copy;
         }
     }
 
