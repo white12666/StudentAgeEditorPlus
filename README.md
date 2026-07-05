@@ -8,7 +8,7 @@
 
 ### 自动安装（推荐）
 
-1. 从https://github.com/white12666/StudentAgeModManager的release界面下载最新的Mod管理器exe
+1. 从 https://github.com/white12666/StudentAgeModManager 的Release界面下载最新的Mod管理器exe
 2. 打开exe，其会自动检测是否已安装BepInEx前置。若未安装，点击安装后刷新即可
 3. 在编辑器增强Plus栏中点击安装，之后重启游戏便可生效
 
