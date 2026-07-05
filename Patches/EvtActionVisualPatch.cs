@@ -683,11 +683,14 @@ namespace StudentAgeEditorPlus.Patches
                 var talkList = t.Field("talkCfgs").GetValue<List<TalkCfg>>();
                 if (talkList == null || talkList.Count == 0) return;
 
-                // List → Dictionary（编辑中可能出现重复 id，后者覆盖前者，避免异常）
+                // List → Dictionary（编辑中可能出现重复 id，后者覆盖前者，避免异常）。
+                // 每句都传"roles 列表浅拷贝"的副本：预览播放器每句播放前会对
+                // roles 列表【就地排序】（进场条目提前），直接传编辑器内存对象
+                // 会悄悄重排作者在动作指令框里看到的数字串顺序——数据侵入！
                 var talkMap = new Dictionary<int, TalkCfg>();
                 foreach (var talk in talkList)
                 {
-                    if (talk != null) talkMap[talk.id] = talk;
+                    if (talk != null) talkMap[talk.id] = ShallowCopyTalk(talk);
                 }
 
                 // 从中间一句开播的两个缺口（用户实测反馈：时而没背景、人物占位乱）：
@@ -772,32 +775,7 @@ namespace StudentAgeEditorPlus.Patches
         private static TalkCfg BuildStartTalkWithContext(
             Traverse t, TalkCfg cur, List<TalkCfg> talkList, Dictionary<int, OptionCfg> optionCfgs)
         {
-            var copy = new TalkCfg
-            {
-                audio = cur.audio,
-                bg = cur.bg,
-                check = cur.check,
-                content = cur.content,
-                effect = cur.effect,
-                effect2 = cur.effect2,
-                highlights = cur.highlights,
-                id = cur.id,
-                maxoptions = cur.maxoptions,
-                miniGame = cur.miniGame,
-                nextTalk = cur.nextTalk,
-                nextTalk2 = cur.nextTalk2,
-                option = cur.option,
-                replace = cur.replace,
-                roleIds = cur.roleIds,
-                roleName = cur.roleName,
-                screenEffect = cur.screenEffect,
-                showTxt = cur.showTxt,
-                time = cur.time,
-                vocals = cur.vocals,
-                roles = cur.roles != null
-                    ? new List<List<float>>(cur.roles)
-                    : new List<List<float>>(),
-            };
+            var copy = ShallowCopyTalk(cur);
 
             // ① 背景继承
             try
@@ -894,6 +872,40 @@ namespace StudentAgeEditorPlus.Patches
             return copy;
         }
 
+        /// <summary>
+        /// TalkCfg 浅拷贝：roles 用新列表（条目内层 List 共享引用——预览只读
+        /// 条目内容，但会对 roles 列表本身就地排序，必须隔离），其余字段直传。
+        /// </summary>
+        private static TalkCfg ShallowCopyTalk(TalkCfg src)
+        {
+            return new TalkCfg
+            {
+                audio = src.audio,
+                bg = src.bg,
+                check = src.check,
+                content = src.content,
+                effect = src.effect,
+                effect2 = src.effect2,
+                highlights = src.highlights,
+                id = src.id,
+                maxoptions = src.maxoptions,
+                miniGame = src.miniGame,
+                nextTalk = src.nextTalk,
+                nextTalk2 = src.nextTalk2,
+                option = src.option,
+                replace = src.replace,
+                roleIds = src.roleIds,
+                roleName = src.roleName,
+                screenEffect = src.screenEffect,
+                showTxt = src.showTxt,
+                time = src.time,
+                vocals = src.vocals,
+                roles = src.roles != null
+                    ? new List<List<float>>(src.roles)
+                    : new List<List<float>>(),
+            };
+        }
+
         /// <summary>某人物沿剧情链回溯累计出的前文状态。</summary>
         private sealed class RoleChainState
         {
@@ -963,9 +975,15 @@ namespace StudentAgeEditorPlus.Patches
         }
 
         /// <summary>
-        /// 沿倒序链累计每个人物的前文状态。句内条目倒序遍历（同句"进场→动作"
-        /// 的先后关系才能正确判定）；"倒序首见即最新"适用于服装/发型/姿势/剪影，
-        /// 位移/翻转/放大为累计语义。全员 closed 后提前结束。
+        /// 沿倒序链累计每个人物的前文状态。
+        /// 每句分两遍处理——这是刻意的：预览/游戏播放每句前会把该人物的
+        /// 进场条目【排序提前】到最先执行，因此同句内的状态/位移指令无论
+        /// 写在进场条目前还是后，实际都在进场之后生效。若按数据顺序倒序
+        /// 一遍走完，写在进场条目之前的状态指令会被 closed 误吞。
+        ///   第一遍（倒序）：非进场条目——状态"倒序首见即最新"（服装/发型/
+        ///   姿势/剪影），位移/翻转/放大累计；遇退场防御性关闭。
+        ///   第二遍：进场条目 → 关闭该人物（更早的状态属于上个出场周期）。
+        /// 全员 closed 后提前结束。
         /// </summary>
         private static Dictionary<int, RoleChainState> CollectRoleStates(
             List<TalkCfg> chain, HashSet<int> personIds)
@@ -979,26 +997,25 @@ namespace StudentAgeEditorPlus.Patches
                 if (openCount <= 0) break;
                 if (talk?.roles == null) continue;
 
+                // 第一遍（倒序）：非进场条目
                 for (int i = talk.roles.Count - 1; i >= 0; i--)
                 {
                     var e = talk.roles[i];
                     if (e == null || e.Count < 2) continue;
                     if (!states.TryGetValue((int)e[0], out var st) || st.closed) continue;
 
-                    int code = (int)e[1];
-                    int type = 0;
-                    if (Cfg.TalkAnimeCfgMap.TryGetValue(code, out var ac)) type = ac.type;
-                    else if (code >= 1001 && code <= 1003) type = 1;
-                    else if (code == 2001 || code == 2002) type = 2;
-
-                    if (type == 1 || type == 2)
+                    int type = GetAnimeType((int)e[1]);
+                    if (type == 1) continue; // 进场留给第二遍
+                    if (type == 2)
                     {
+                        // 防御：该人物在场却先遇到退场（理论上不会发生，
+                        // 因为退场后必有再进场才可能在场，而进场会先关闭）
                         st.closed = true;
                         openCount--;
                         continue;
                     }
 
-                    switch (code)
+                    switch ((int)e[1])
                     {
                         case 3004: if (e.Count > 2) st.sumX += e[2]; break;
                         case 3008: if (e.Count > 2) st.sumY += e[2]; break;
@@ -1013,8 +1030,29 @@ namespace StudentAgeEditorPlus.Patches
                         case 3013: if (st.shadow < 0) st.shadow = 0; break;
                     }
                 }
+
+                // 第二遍：进场条目 → 关闭
+                foreach (var e in talk.roles)
+                {
+                    if (e == null || e.Count < 2) continue;
+                    if (!states.TryGetValue((int)e[0], out var st) || st.closed) continue;
+                    if (GetAnimeType((int)e[1]) == 1)
+                    {
+                        st.closed = true;
+                        openCount--;
+                    }
+                }
             }
             return states;
+        }
+
+        /// <summary>动作类型：1=进场 2=退场，其余 0/3/4/5；配置表优先，回退硬编码。</summary>
+        private static int GetAnimeType(int code)
+        {
+            if (Cfg.TalkAnimeCfgMap.TryGetValue(code, out var ac)) return ac.type;
+            if (code >= 1001 && code <= 1003) return 1;
+            if (code == 2001 || code == 2002) return 2;
+            return 0;
         }
 
         private static bool ContainsSafe(List<int> list, int v) => list != null && list.Contains(v);
