@@ -6,14 +6,14 @@
 
 ## 安装
 
-### 方式一：一键安装器（推荐）
+### 自动安装（推荐）
 
-1. 下载 `install_plugin.bat`
-2. 双击运行
-3. 脚本会自动检测游戏目录、从 GitHub 下载最新版插件 DLL 并安装到位
+1. 从 https://github.com/white12666/StudentAgeModManager 的Release界面下载最新的Mod管理器exe
+2. 打开exe，其会自动检测是否已安装BepInEx前置。若未安装，点击安装后刷新即可
+3. 在编辑器增强Plus栏中点击安装，之后重启游戏便可生效
 
 
-### 方式二：手动安装
+### 手动安装
 
 1. 从 [Releases](https://github.com/white12666/StudentAgeEditorPlus/releases) 下载最新的 `StudentAgeEditorPlus.dll`
 2. 放入游戏目录下的 `BepInEx/plugins/StudentAgeEditorPlus/`
@@ -32,13 +32,12 @@ dotnet build -c Release
 1. `dotnet build -c Release`
 2. 在 GitHub 创建新 Release（建议 tag 格式 `v0.x.x`）
 3. 上传 `bin/Release/StudentAgeEditorPlus.dll` 作为 Release Asset
-4. 安装器会自动拉取最新 Release 的 DLL
 
 ## License
 
 AGPL-3.0
 
-## 开源协议声明
+### 开源协议声明
 
 本 mod 基于 **AGPL-3.0** 协议开源，这是一份强 Copyleft（传染性）协议。通俗概括如下：
 
@@ -55,9 +54,7 @@ AGPL-3.0
 
 ---
 
-## 二、官方豁免（附加许可）
-
-## 附加许可（Additional Permission，基于 AGPL-3.0 第 7 条）
+### 附加许可（Additional Permission，基于 AGPL-3.0 第 7 条）
 
 作为本项目的创作者，本人在 AGPL-3.0 协议之外，额外授予**白雨工作室**及其工作人员（仅限用于该工作室的开发与运营工作）一份**免费、非独占、不可撤销**的许可：
 
