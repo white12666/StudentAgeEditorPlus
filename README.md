@@ -16,7 +16,7 @@
 ### 手动安装
 
 1. 从 [Releases](https://github.com/white12666/StudentAgeEditorPlus/releases) 下载最新的 `StudentAgeEditorPlus.dll`
-2. 放入游戏目录下的 `BepInEx/plugins/StudentAgeEditorPlus/`
+2. 放入游戏目录下的 `BepInEx/plugins/StudentAgeEditorPlus/`。如没有StudentAgeEditorPlus文件夹，则需新建文件夹并重命名后，将dll放入该文件夹
 3. 启动游戏
 
 ## 构建从源码
