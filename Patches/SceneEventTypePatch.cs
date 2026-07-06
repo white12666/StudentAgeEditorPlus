@@ -6,7 +6,6 @@ using View.Mod;
 
 namespace StudentAgeEditorPlus.Patches
 {
-    /// <summary>
     /// 修复："场景事件只能改 JSON 才能触发"。
     ///
     /// 成因：场景进入/离开事件靠 EvtCfg.type 编码触发（进入=900+地图号，离开=800+地图号，
@@ -19,7 +18,6 @@ namespace StudentAgeEditorPlus.Patches
     /// 注入 EvtTypeCfgMap。原生下拉读的就是这张表，会自动多出这些选项，无需自绘 UI。
     /// 注入条目仅存在于作者当前会话；产出的 mod 只是 type=9xx，在原版客户端可正常触发，
     /// 玩家无需依赖本插件（ShowEvent 路径不查 EvtTypeCfgMap，已验证）。
-    /// </summary>
     [HarmonyPatch(typeof(ModNormalEditView), "InitFields")]
     internal static class SceneEventTypePatch
     {
@@ -37,11 +35,9 @@ namespace StudentAgeEditorPlus.Patches
 
         private static bool _loggedOnce;
 
-        /// <summary>
         /// 对每个 type==0 的地图，确保 EvtTypeCfgMap 含有其进入(900+id)/离开(800+id) 类型。
         /// 幂等：已存在则跳过。离开类型仅在 id<100 时注入（否则 800+id≥900 会与低编号地图的
         /// 进入类型撞号，这是原版编码本身的限制）。
-        /// </summary>
         public static void EnsureRegistered()
         {
             var typeMap = Cfg.EvtTypeCfgMap;

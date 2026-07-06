@@ -92,11 +92,9 @@ namespace StudentAgeEditorPlus.Patches
             Refresh(__instance, _forceReload: false);
         }
 
-        /// <summary>
         /// 刷新当前选中条目的图片预览。
         /// _forceReload=true 时跳过游戏的纹理缓存、直接从磁盘重读，
         /// 用于图片文件内容可能已变化的场景（上传新图、点保存）。
-        /// </summary>
         internal static void Refresh(ModNormalEditView __instance, bool _forceReload)
         {
             try

@@ -10,12 +10,10 @@ using UnityEngine;
 
 namespace StudentAgeEditorPlus
 {
-    /// <summary>
     /// 一次性运行时诊断：核实"场景事件只能改 JSON 才能触发"的成因。
     /// 等游戏把配置表加载完后，dump 真实的 EvtTypeCfgMap / MapCfgMap、
     /// 场景触发类型(800/900+mapId)的覆盖缺口，以及 EvtCfg 字段的编辑器特性。
     /// 结论写入 BepInEx 日志 + 独立文件，方便取证。
-    /// </summary>
     internal class SceneTriggerDiagnostic : MonoBehaviour
     {
         private bool _done;

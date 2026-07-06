@@ -6,12 +6,10 @@ using UnityEngine;
 
 namespace StudentAgeEditorPlus
 {
-    /// <summary>
     /// StudentAge MOD 编辑器增强插件（全新工程，取代已废弃的 StudentAgeModEditorFix）。
     /// 修复内容：
     ///   - 场景触发补全：让事件编辑器的「类型」下拉可选所有场景地图的进入/离开触发
     ///     （详见 Patches/SceneEventTypePatch）。
-    /// </summary>
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
     public class Plugin : BaseUnityPlugin
     {

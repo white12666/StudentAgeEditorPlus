@@ -13,7 +13,6 @@ using View.Mod;
 
 namespace StudentAgeEditorPlus.Patches
 {
-    /// <summary>
     /// 改进：事件对话编辑器的"动作指令"缺少可视化。
     ///
     /// 作者反馈：动作指令只能填一串数字（如 1,3004,300），既看不出每个数字
@@ -45,10 +44,9 @@ namespace StudentAgeEditorPlus.Patches
     ///（证据：真实同侧多人间距 300px（NewTalkView.UpdatePosRoles）
     ///  ↔ 编辑器槽位间距 210px；立绘 localScale 也是 0.7）。
     /// 因此舞台位移 = 指令偏移 × 0.7。
-    /// </summary>
     internal static class TalkActionTranslator
     {
-        /// <summary>动作/效果码 → 中文名（对照 Config.TalkAnimeDefine 硬编码，配置表无名称字段）。</summary>
+        /// 动作/效果码 → 中文名（对照 Config.TalkAnimeDefine 硬编码，配置表无名称字段）。
         private static readonly Dictionary<int, string> ActionNames = new Dictionary<int, string>
         {
             { 1001, "放置进场" },
@@ -94,7 +92,7 @@ namespace StudentAgeEditorPlus.Patches
             { 5002, "歌词" },
         };
 
-        /// <summary>把整个 roles 列表翻译成多行"人名：动作(参数)"。</summary>
+        /// 把整个 roles 列表翻译成多行"人名：动作(参数)"。
         public static string Translate(List<List<float>> roles, Dictionary<int, PersonCfg> personCfgs)
         {
             if (roles == null || roles.Count == 0) return null;
@@ -109,10 +107,8 @@ namespace StudentAgeEditorPlus.Patches
             return sb.Length > 0 ? sb.ToString() : null;
         }
 
-        /// <summary>
         /// 翻译屏幕效果字段（screenEffect：[效果码, 参数...]，一条对话只有一条）。
         /// 参数语义对照 NewTalkView 中对 cfg.screenEffect 的各分支处理。
-        /// </summary>
         public static string TranslateScreenEffect(List<float> se)
         {
             if (se == null || se.Count == 0) return null;
@@ -177,10 +173,8 @@ namespace StudentAgeEditorPlus.Patches
                 : $"{person}：{actionName} {parms}";
         }
 
-        /// <summary>
         /// 按动作类型解释参数。参数语义对照 NewTalkView.HelpCheckRoleAction
         ///（反编译 L2440-2716），只解释高频动作，其余原样列出数字。
-        /// </summary>
         private static string DescribeParams(int actionId, List<float> entry)
         {
             // entry: [人物ID, 动作码, p0, p1, ...]
@@ -247,10 +241,8 @@ namespace StudentAgeEditorPlus.Patches
             return parts.Count > 0 ? $"({string.Join("、", parts)})" : null;
         }
 
-        /// <summary>
         /// 累加某人物在当前对话中所有横移/纵移指令的偏移量（真实画面像素）。
         /// 供舞台位移示意使用。
-        /// </summary>
         public static Vector2 GetTalkOffset(TalkCfg talk, int personId)
         {
             var offset = Vector2.zero;
@@ -275,7 +267,7 @@ namespace StudentAgeEditorPlus.Patches
             return $"人物{personId}";
         }
 
-        /// <summary>TalkAxis：1=左 2=右 3=中（View.Evt.TalkAxis 枚举，已核实）。</summary>
+        /// TalkAxis：1=左 2=右 3=中（View.Evt.TalkAxis 枚举，已核实）。
         private static string AxisName(int axis)
         {
             switch (axis)
@@ -288,27 +280,25 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// <summary>数字格式化：去掉多余小数位（300 而非 300.0）。</summary>
+        /// 数字格式化：去掉多余小数位（300 而非 300.0）。
         private static string Num(float v) => v.ToString("0.##");
     }
 
-    /// <summary>
     /// 功能 1+2：动作指令 / 屏幕效果的悬浮翻译。
     /// InitUI 时给两个输入框注册鼠标进入/移出回调（游戏自带的
     /// Sdk.AddMouseEnter/AddMouseExit 扩展，原版未占用这两个输入框的回调）：
     /// 悬浮 → 输入框下方弹出提示框显示翻译（置顶渲染 + 屏幕边缘保护）；
     /// 移出 → 隐藏。onEndEdit 后若提示框正显示着，内容同步刷新。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "InitUI")]
     internal static class EvtActionHintInitPatch
     {
         private const string TooltipObjName = "EvtActionTooltip";
 
-        /// <summary>提示框（挂在编辑器根节点下，视图关闭时随之销毁）。</summary>
+        /// 提示框（挂在编辑器根节点下，视图关闭时随之销毁）。
         private static GameObject _tooltip;
         private static Text _tooltipText;
 
-        /// <summary>提示框当前锚定的输入框（null = 未显示），用于 onEndEdit 时判断是否要刷新内容。</summary>
+        /// 提示框当前锚定的输入框（null = 未显示），用于 onEndEdit 时判断是否要刷新内容。
         private static InputField _hoverInput;
 
         private static void Postfix(ModEvtEditView __instance)
@@ -368,7 +358,7 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// <summary>切换选中对话（含删除后 Select(null)）时隐藏提示框，避免残留旧内容。</summary>
+        /// 切换选中对话（含删除后 Select(null)）时隐藏提示框，避免残留旧内容。
         internal static void OnSelectChanged()
         {
             HideTooltip();
@@ -427,12 +417,10 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// <summary>
         /// 提示框定位：贴在输入框左下角的下方 6px（向下弹出——上一版向上弹出
         /// 时内容多会溢出屏幕上边缘）。再按编辑器根节点的矩形做边缘保护：
         /// 底部放不下就上抬，右侧超界就左移。全程在根节点本地坐标系计算，
         /// 不受分辨率与画布缩放影响。
-        /// </summary>
         private static void PositionBelow(RectTransform bgRt, InputField input)
         {
             var rootRt = bgRt.parent as RectTransform;
@@ -467,11 +455,9 @@ namespace StudentAgeEditorPlus.Patches
                 _tooltip.SetActive(false);
         }
 
-        /// <summary>
         /// 提示框 = 深色半透明背景 Image + 文字 Text，挂在编辑器根节点下
         ///（跟随视图销毁）。整体不参与鼠标点击判定，避免遮住输入框后
         /// 触发"移出"回调造成闪烁。
-        /// </summary>
         private static GameObject GetOrCreateTooltip(ModEvtEditView view)
         {
             if (_tooltip != null) return _tooltip;
@@ -523,19 +509,17 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>
     /// 功能 3：舞台位移示意。
     /// OnRenderRole 渲染完立绘后，若当前对话给该人物填了横移/纵移指令，
     /// 就把立绘从槽位基准位置挪到移动终点（偏移 × 0.7 舞台缩放比）。
     /// 无移动指令时归零还原——立绘对象会被复用，必须每次重置。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "OnRenderRole", typeof(Cell_ModEvtRoleItemUI))]
     internal static class EvtStageOffsetPatch
     {
-        /// <summary>编辑器舞台相对真实对话画面的缩放比（间距 300→210px、立绘 scale 0.7，已核实）。</summary>
+        /// 编辑器舞台相对真实对话画面的缩放比（间距 300→210px、立绘 scale 0.7，已核实）。
         private const float StageScale = 0.7f;
 
-        /// <summary>各立绘对象的基准位置（key = GameObject.GetInstanceID）。</summary>
+        /// 各立绘对象的基准位置（key = GameObject.GetInstanceID）。
         private static readonly Dictionary<int, Vector2> BasePos = new Dictionary<int, Vector2>();
 
         private static void Postfix(ModEvtEditView __instance, Cell_ModEvtRoleItemUI _cell)
@@ -570,7 +554,6 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>
     /// 功能 4："预览本句"按钮。
     /// 原版预览入口在外层事件编辑页，且永远从事件第一句开始播
     ///（PreviewTalkView.OnOpen 取 talkId[0]），调中间某句的动画极其低效。
@@ -588,7 +571,6 @@ namespace StudentAgeEditorPlus.Patches
     ///
     /// 已知限制（游戏机制决定）：从中间某句开播，更早对话里进场的人物
     /// 不会出现在画面里。首次使用时 Toast 提示一次。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "InitUI")]
     internal static class EvtTalkPreviewPatch
     {
@@ -653,7 +635,7 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// <summary>选中状态变化时联动按钮显隐（与原版 btn_delete 的显隐逻辑保持一致）。</summary>
+        /// 选中状态变化时联动按钮显隐（与原版 btn_delete 的显隐逻辑保持一致）。
         internal static void SetVisible(bool visible)
         {
             if (_previewBtn == null) return;
@@ -740,7 +722,7 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// <summary>合并配置表：custom 优先，原版补缺（与游戏 mod 合并的"先到先得"语义一致）。</summary>
+        /// 合并配置表：custom 优先，原版补缺（与游戏 mod 合并的"先到先得"语义一致）。
         private static Dictionary<int, T> Merge<T>(Dictionary<int, T> custom, Dictionary<int, T> global)
         {
             var result = new Dictionary<int, T>();
@@ -758,7 +740,6 @@ namespace StudentAgeEditorPlus.Patches
             return result;
         }
 
-        /// <summary>
         /// 生成起始句的"补齐上下文"副本：
         ///   - bg<=0 时用编辑器的 FindBgId(talkId) 回溯继承背景；
         ///   - 用编辑器的 FindRoles(talkId) 算出此刻在场的人物及方位，为
@@ -771,7 +752,6 @@ namespace StudentAgeEditorPlus.Patches
         /// 与编辑器共享引用但双方都只读，安全。
         /// 已知残留：纵向累计位移以 0.4 秒快速滑动呈现（纵移指令无时长参数）；
         /// 表情/跳跃/抖动等瞬时动画不回放（真实游戏里本就不跨句残留）。
-        /// </summary>
         private static TalkCfg BuildStartTalkWithContext(
             Traverse t, TalkCfg cur, List<TalkCfg> talkList, Dictionary<int, OptionCfg> optionCfgs)
         {
@@ -872,10 +852,8 @@ namespace StudentAgeEditorPlus.Patches
             return copy;
         }
 
-        /// <summary>
         /// TalkCfg 浅拷贝：roles 用新列表（条目内层 List 共享引用——预览只读
         /// 条目内容，但会对 roles 列表本身就地排序，必须隔离），其余字段直传。
-        /// </summary>
         private static TalkCfg ShallowCopyTalk(TalkCfg src)
         {
             return new TalkCfg
@@ -906,10 +884,10 @@ namespace StudentAgeEditorPlus.Patches
             };
         }
 
-        /// <summary>某人物沿剧情链回溯累计出的前文状态。</summary>
+        /// 某人物沿剧情链回溯累计出的前文状态。
         private sealed class RoleChainState
         {
-            /// <summary>已遇到该人的进场/退场，停止累计（更早的状态属于上个出场周期）。</summary>
+            /// 已遇到该人的进场/退场，停止累计（更早的状态属于上个出场周期）。
             public bool closed;
             public float sumX;
             public float sumY;
@@ -921,13 +899,11 @@ namespace StudentAgeEditorPlus.Patches
             public int shadow = -1;  // -1=未见 1=剪影 0=正常
         }
 
-        /// <summary>
         /// 沿剧情链从起始句往前走，返回按时间倒序的前驱对话序列（不含起始句）。
         /// 前驱查找与停止条件完全复刻编辑器 FindRoles（反编译 L588-615）：
         /// nextTalk/nextTalk2 反查 → 查不到再从选项反查；停止于环（visited）、
         /// 无前驱、前驱 bg==-1、换背景边界（含原版"与起始句 bg 比较"的怪癖，
         /// 保持与编辑器小舞台的在场判定一致）。
-        /// </summary>
         private static List<TalkCfg> WalkChainBackward(
             List<TalkCfg> talks, Dictionary<int, OptionCfg> optionCfgs, TalkCfg start)
         {
@@ -974,7 +950,6 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// <summary>
         /// 沿倒序链累计每个人物的前文状态。
         /// 每句分两遍处理——这是刻意的：预览/游戏播放每句前会把该人物的
         /// 进场条目【排序提前】到最先执行，因此同句内的状态/位移指令无论
@@ -984,7 +959,6 @@ namespace StudentAgeEditorPlus.Patches
         ///   姿势/剪影），位移/翻转/放大累计；遇退场防御性关闭。
         ///   第二遍：进场条目 → 关闭该人物（更早的状态属于上个出场周期）。
         /// 全员 closed 后提前结束。
-        /// </summary>
         private static Dictionary<int, RoleChainState> CollectRoleStates(
             List<TalkCfg> chain, HashSet<int> personIds)
         {
@@ -1046,7 +1020,7 @@ namespace StudentAgeEditorPlus.Patches
             return states;
         }
 
-        /// <summary>动作类型：1=进场 2=退场，其余 0/3/4/5；配置表优先，回退硬编码。</summary>
+        /// 动作类型：1=进场 2=退场，其余 0/3/4/5；配置表优先，回退硬编码。
         private static int GetAnimeType(int code)
         {
             if (Cfg.TalkAnimeCfgMap.TryGetValue(code, out var ac)) return ac.type;
@@ -1058,9 +1032,7 @@ namespace StudentAgeEditorPlus.Patches
         private static bool ContainsSafe(List<int> list, int v) => list != null && list.Contains(v);
     }
 
-    /// <summary>
     /// 选中对话变化时：隐藏悬浮提示框（防旧内容残留）+ 联动"预览本句"按钮显隐。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "Select", typeof(TalkCfg))]
     internal static class EvtTalkPreviewSelectPatch
     {

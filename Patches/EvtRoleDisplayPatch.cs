@@ -11,7 +11,6 @@ using View.Mod;
 
 namespace StudentAgeEditorPlus.Patches
 {
-    /// <summary>
     /// 修复：事件对话编辑器的人物预览最多只显示 3 个人物，实际 UI 最多能放 9 个。
     ///
     /// 成因：ModEvtEditUI 预制体为左/中/右三个方位各定义了 3 个槽位
@@ -51,7 +50,6 @@ namespace StudentAgeEditorPlus.Patches
     ///   - 补丁 C（OnCreateRole Prefix）：替换 + 按钮逻辑，允许同方位多人物；
     ///     记录点击的槽位供补丁 B 精确落位；替换从上文对话入场的人物时，
     ///     补退场动作实现真正的"换人"而非"多加一个人"。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "InitUI")]
     internal static class EvtRoleDisplayInitPatch
     {
@@ -136,10 +134,8 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// <summary>
         /// 把 _1/_2 槽位 btn_add 的 RectTransform 布局（含 "+" 图标、点击区域子节点）
         /// 对齐到 _0 槽位的模板样式。
-        /// </summary>
         private static void AlignAddButton(UIButton dst, UIButton src)
         {
             if (dst == null || src == null) return;
@@ -169,11 +165,9 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// <summary>
         /// 把槽位 btn_add 的点击判定区收窄到 "+" 图标附近（130×130）。
         /// 相邻槽位中心距最小 140px，收窄后互不重叠；
         /// 人物立绘（icon_role/l2d_role）不参与点击判定，不受影响。
-        /// </summary>
         private static void ShrinkClickArea(UIButton btn)
         {
             if (btn == null || btn.transform == null) return;
@@ -207,14 +201,12 @@ namespace StudentAgeEditorPlus.Patches
     [HarmonyPatch(typeof(ModEvtEditView), "RefreshRoles")]
     internal static class EvtRoleDisplayRefreshPatch
     {
-        /// <summary>
         /// Prefix 替换原方法。分配优先级：
         ///   0) 刚点击 + 添加/替换的人物 → 落在被点击的那个槽位；
         ///   1) 已在场人物 → 保持上一次所在槽位（增删他人时不跳位）；
         ///   2) 其余人物 → 按"居中 → 左 → 右"填入空槽（第 1 人与原版编辑器
         ///      的显示位置一致，兼容旧 mod 的单人对话预览）。
         /// 最后所有槽位常显（空槽显示 + 按钮）。
-        /// </summary>
         private static bool Prefix(ModEvtEditView __instance)
         {
             try
@@ -357,7 +349,6 @@ namespace StudentAgeEditorPlus.Patches
     }
 
 
-    /// <summary>
     /// 补丁 C：OnCreateRole Prefix — 替换添加逻辑，允许同方位多人物。
     ///
     /// 原版对同一方位的 1002（入场）动作做替换而非新增，
@@ -370,11 +361,10 @@ namespace StudentAgeEditorPlus.Patches
     ///         新人多加一个"）。
     /// 同时记录被点击的槽位（PendingCell/PendingPersonId），
     /// 供 RefreshRoles 把人物精确落在作者点击的那个槽位上。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "OnCreateRole")]
     internal static class EvtRoleDisplayCreatePatch
     {
-        /// <summary>刚通过 + 按钮添加/替换人物的目标槽位（一次性，RefreshRoles 消费后清除）。</summary>
+        /// 刚通过 + 按钮添加/替换人物的目标槽位（一次性，RefreshRoles 消费后清除）。
         internal static Cell_ModEvtRoleItemUI PendingCell;
         internal static int PendingPersonId;
 
@@ -510,11 +500,9 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// <summary>
         /// 让人物 personId 从当前对话退场（与原版移除逻辑一致）：
         /// 删掉本对话里他的全部动作条目，补一条 2002 退场动作；
         /// 若他是当前说话人（roleIds），同步移除并刷新对话框头像。
-        /// </summary>
         private static void RemoveRole(Traverse t, TalkCfg curSelect, int personId)
         {
             if (curSelect.roles == null)
@@ -536,7 +524,7 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// <summary>安全获取 curSelect.id，用于 FindRoles 调用。</summary>
+        /// 安全获取 curSelect.id，用于 FindRoles 调用。
         private static int curSelectTalkId(Traverse t)
         {
             var curSelect = t.Field("curSelect").GetValue<TalkCfg>();

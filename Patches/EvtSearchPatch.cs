@@ -32,7 +32,7 @@ namespace StudentAgeEditorPlus.Patches
         public const float SearchBarHeight = 36f;
         public const string SearchBarName = "EditorPlus_SearchBar";
 
-        /// <summary>从场景中已有 Text 组件获取游戏字体，确保中文正常。</summary>
+        /// 从场景中已有 Text 组件获取游戏字体，确保中文正常。
         public static Font FindUiFont()
         {
             var t = UnityEngine.Object.FindObjectOfType<Text>();
@@ -40,10 +40,8 @@ namespace StudentAgeEditorPlus.Patches
             return Resources.GetBuiltinResource<Font>("Arial.ttf");
         }
 
-        /// <summary>
         /// 创建一个带背景、占位文字、输入文字的 InputField 搜索栏。
         /// 调用方负责通过 PlaceAboveScroll 设置 RectTransform 的锚点和位置。
-        /// </summary>
         public static (GameObject go, InputField input) Create(Transform parent, string placeholder)
         {
             // 根节点：背景 + InputField
@@ -101,7 +99,7 @@ namespace StudentAgeEditorPlus.Patches
             return (go, input);
         }
 
-        /// <summary>让 RectTransform 填满父节点，留出指定内边距。</summary>
+        /// 让 RectTransform 填满父节点，留出指定内边距。
         private static void FillParent(RectTransform rt, float hPad, float vPad)
         {
             rt.anchorMin = Vector2.zero;
@@ -111,14 +109,12 @@ namespace StudentAgeEditorPlus.Patches
             rt.offsetMax = new Vector2(-hPad, -vPad);
         }
 
-        /// <summary>
         /// 将 containerRt 顶部下移 height，在腾出的空间放置 barRt。
         /// 返回 containerRt 原始 offsetMax（用于关闭时恢复）。
         /// 要求 containerRt 使用拉伸锚点 (0,0,1,1)，绝大多数滚动视图都满足。
         /// barRt 的 Y 锚点设为顶部锚点（与 containerRt 顶部对齐），
         /// 这样 offsetMin/offsetMax 相对于父容器顶部计算，
         /// 搜索栏只占据顶部 height 像素的窄条，不会覆盖整个列表区域。
-        /// </summary>
         public static Vector2 PlaceAboveScroll(RectTransform containerRt, RectTransform barRt, float height)
         {
             var originalOffsetMax = containerRt.offsetMax;
@@ -134,11 +130,9 @@ namespace StudentAgeEditorPlus.Patches
             return originalOffsetMax;
         }
 
-        /// <summary>
         /// 从 itemgroup_content 向上查找 ScrollRect；找不到则直接用 itemgroup_content 自身。
         /// ModEvtBrowserUI 没有 ScrollRect 字段，itemgroup_content 是根的直接子节点，
         /// 但 prefab 中它可能自身带 ScrollRect 组件，也可能被 ScrollRect 包裹。
-        /// </summary>
         public static RectTransform FindScrollContainer(UIItemGroup itemGroup)
         {
             if (itemGroup?.gameObject == null) return null;
@@ -156,7 +150,7 @@ namespace StudentAgeEditorPlus.Patches
             return go.GetComponent<RectTransform>();
         }
 
-        /// <summary>在 parent 下查找已有的搜索栏。</summary>
+        /// 在 parent 下查找已有的搜索栏。
         public static GameObject FindExisting(Transform parent)
         {
             if (parent == null) return null;
@@ -164,7 +158,7 @@ namespace StudentAgeEditorPlus.Patches
             return found?.gameObject;
         }
 
-        /// <summary>销毁已有搜索栏，并在销毁前恢复其占用的滚动区域空间。</summary>
+        /// 销毁已有搜索栏，并在销毁前恢复其占用的滚动区域空间。
         public static void DestroyExisting(Transform parent)
         {
             var existing = FindExisting(parent);
@@ -175,11 +169,9 @@ namespace StudentAgeEditorPlus.Patches
             UnityEngine.Object.Destroy(existing);
         }
 
-        /// <summary>
         /// 清空搜索后，滚动到当前选中条目使其可见。
         /// 通过 UIItemGroup.FindCell 找到选中项的 cell，
         /// 再根据 cell 在 scrollLeft.content 中的位置计算 verticalNormalizedPosition。
-        /// </summary>
         /// <param name="itemgroup">列表组件（itemgroup_item / itemgroup_list）</param>
         /// <param name="scrollLeft">外层 ScrollRect</param>
         /// <param name="selectedData">当前选中的数据对象（curSelect）</param>
@@ -216,11 +208,9 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>
     /// 搜索栏自动清理：当父 View 被关闭时，恢复滚动区域尺寸。
     /// 不在 OnDisable 中销毁自身——搜索栏随 View 的 gameObject 一同被
     /// ResMgr 回收或由下次 OnOpen 的 DestroyExisting 清理。
-    /// </summary>
     internal class SearchBarCleanup : MonoBehaviour
     {
         [NonSerialized] public RectTransform ScrollToRestore;
@@ -251,10 +241,8 @@ namespace StudentAgeEditorPlus.Patches
 
     internal static class SearchMatch
     {
-        /// <summary>
         /// 判断 searchText 是否匹配指定 id 和文本字段（不区分大小写）。
         /// 空白搜索返回 true（不过滤）。中文天然支持。
-        /// </summary>
         public static bool Match(string searchText, int id, params string[] textFields)
         {
             if (string.IsNullOrWhiteSpace(searchText)) return true;
@@ -276,10 +264,8 @@ namespace StudentAgeEditorPlus.Patches
             return false;
         }
 
-        /// <summary>
         /// 将 text 中所有与 keyword 匹配的子串用富文本 color 标签包裹（不区分大小写），
         /// 使匹配部分在 UI 上高亮显示。keyword 为空白时原样返回。
-        /// </summary>
         public static string Highlight(string text, string keyword, string colorHex = "#D4A017")
         {
             if (string.IsNullOrEmpty(text) || string.IsNullOrWhiteSpace(keyword))
@@ -308,7 +294,7 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>每个 View 实例的搜索状态。</summary>
+    /// 每个 View 实例的搜索状态。
     internal class SearchState
     {
         public InputField Input;
@@ -367,7 +353,7 @@ namespace StudentAgeEditorPlus.Patches
             catch (Exception e) { Plugin.Log.LogError($"[EvtBrowserSearchInit] {e}"); }
         }
 
-        /// <summary>按搜索文本 + 角色筛选双重过滤 allEvtCfgs，更新 evts 和分页。</summary>
+        /// 按搜索文本 + 角色筛选双重过滤 allEvtCfgs，更新 evts 和分页。
         internal static void ApplyFilters(ModEvtBrowserView view, string searchText)
         {
             var t = Traverse.Create(view);
@@ -435,7 +421,7 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>角色下拉变化时，重新应用文本搜索（两个筛选器联动）。</summary>
+    /// 角色下拉变化时，重新应用文本搜索（两个筛选器联动）。
     [HarmonyPatch(typeof(ModEvtBrowserView), "OnFilit")]
     internal static class EvtBrowserSearchRefilterPatch
     {
@@ -504,7 +490,7 @@ namespace StudentAgeEditorPlus.Patches
             catch (Exception e) { Plugin.Log.LogError($"[NormalEditSearchInit] {e}"); }
         }
 
-        /// <summary>过滤 cfgs 列表并刷新 itemgroup_item 显示。</summary>
+        /// 过滤 cfgs 列表并刷新 itemgroup_item 显示。
         internal static void ApplyFilter(ModNormalEditView view, string searchText)
         {
             var t = Traverse.Create(view);
@@ -578,7 +564,7 @@ namespace StudentAgeEditorPlus.Patches
             return s;
         }
 
-        /// <summary>清除搜索文本（新增/删除条目时调用，让用户看到完整列表）。</summary>
+        /// 清除搜索文本（新增/删除条目时调用，让用户看到完整列表）。
         internal static void ClearSearch(ModNormalEditView view)
         {
             var state = GetState(view);
@@ -587,7 +573,7 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>新增条目后清除搜索（让新条目立即可见）。</summary>
+    /// 新增条目后清除搜索（让新条目立即可见）。
     [HarmonyPatch(typeof(ModNormalEditView), "OnClickNewItem")]
     internal static class NormalEditSearchRefilterPatch
     {
@@ -598,7 +584,7 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>删除条目后清除搜索（让列表变化立即可见）。</summary>
+    /// 删除条目后清除搜索（让列表变化立即可见）。
     [HarmonyPatch(typeof(ModNormalEditView), "DeleteCur")]
     internal static class NormalEditSearchRefilterPatch2
     {
@@ -660,7 +646,7 @@ namespace StudentAgeEditorPlus.Patches
             catch (Exception e) { Plugin.Log.LogError($"[EvtEditSearchInit] {e}"); }
         }
 
-        /// <summary>过滤 talkCfgs 列表并刷新 itemgroup_list 显示。</summary>
+        /// 过滤 talkCfgs 列表并刷新 itemgroup_list 显示。
         internal static void ApplyFilter(ModEvtEditView view, string searchText)
         {
             var talkCfgs = Traverse.Create(view).Field("talkCfgs").GetValue<List<TalkCfg>>();
@@ -699,7 +685,7 @@ namespace StudentAgeEditorPlus.Patches
             return s;
         }
 
-        /// <summary>清除搜索文本（新增对话时调用）。</summary>
+        /// 清除搜索文本（新增对话时调用）。
         internal static void ClearSearch(ModEvtEditView view)
         {
             var state = GetState(view);
@@ -708,7 +694,7 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>新增对话后清除搜索（让新对话立即可见）。</summary>
+    /// 新增对话后清除搜索（让新对话立即可见）。
     [HarmonyPatch(typeof(ModEvtEditView), "OnClickNew")]
     internal static class EvtEditSearchRefilterPatch
     {
@@ -725,7 +711,7 @@ namespace StudentAgeEditorPlus.Patches
     //     color 标签，使匹配文字高亮显示（黄色）。
     // ═════════════════════════════════════════════════════════════════
 
-    /// <summary>事件浏览器列表项高亮。</summary>
+    /// 事件浏览器列表项高亮。
     [HarmonyPatch(typeof(ModEvtBrowserView), "OnRender")]
     internal static class EvtBrowserHighlightPatch
     {
@@ -749,7 +735,7 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>通用编辑器列表项高亮。</summary>
+    /// 通用编辑器列表项高亮。
     [HarmonyPatch(typeof(ModNormalEditView), "OnRenderItem")]
     internal static class NormalEditHighlightPatch
     {
@@ -772,7 +758,7 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>事件对话编辑器列表项高亮。</summary>
+    /// 事件对话编辑器列表项高亮。
     [HarmonyPatch(typeof(ModEvtEditView), "OnRenderItem")]
     internal static class EvtEditHighlightPatch
     {

@@ -10,9 +10,7 @@ using View.Mod;
 
 namespace StudentAgeEditorPlus.Patches
 {
-    /// <summary>
     /// 读取 ModNormalEditView 的 protected 字段的小工具。
-    /// </summary>
     internal static class EditViewAccess
     {
         public static System.Type CfgType(object view) =>
@@ -28,10 +26,8 @@ namespace StudentAgeEditorPlus.Patches
             Traverse.Create(view).Field("curSelect").GetValue();
     }
 
-    /// <summary>
     /// 增强 A：事件编辑器里 mapId（场景）字段不驱动"进入场景触发"，只是筛选器，
     /// 容易让作者误以为设了它就能触发。这里给它的悬浮说明追加一句提示，引导用『类型』字段。
-    /// </summary>
     [HarmonyPatch(typeof(ModNormalEditView), "InitFields")]
     internal static class MapIdHintPatch
     {
@@ -59,13 +55,11 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>
     /// 修复 CG 编辑器（CGCfg 走通用编辑器 ModNormalEditView）"不显示分组和编号"：
     ///   - group(组别)：原本带 Hide=true 被隐藏 → 解除隐藏，可见可编辑。
     ///   - idx(编号)：原本无 [CfgProperty] 不在编辑器 → 注入一个字段项。
     /// 两者决定 CG 在收藏画廊里的分类(group)与排序编号(idx，>0 才显示成 001/002…)，
     /// group 0/1 还决定 CG 能否被当作背景选用。
-    /// </summary>
     [HarmonyPatch(typeof(ModNormalEditView), "InitFields")]
     internal static class CgEditorFieldsPatch
     {
@@ -137,7 +131,6 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>
     /// 修复：物品编辑器不显示「持有上限(maxcount)」字段。
     ///
     /// 成因：ItemCfg.maxcount 带 Hide=true，通用编辑器(ModNormalEditView)跳过它；
@@ -148,7 +141,6 @@ namespace StudentAgeEditorPlus.Patches
     ///
     /// 修复：Postfix on InitFields（仅 ItemCfg），解除 maxcount 的隐藏并补充取值说明。
     /// 对玩家零依赖：产出的 mod 只是 maxcount 值，原版客户端正常读取。
-    /// </summary>
     [HarmonyPatch(typeof(ModNormalEditView), "InitFields")]
     internal static class ItemMaxCountPatch
     {
@@ -177,14 +169,12 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>
     /// QQ 空间内容编辑增强：
     ///   - KZoneContentCfg 本身没有显式 type 字段，游戏靠 id 是否以 99 开头区分“日志/说说”；
     ///     这里把这个隐式规则显示到左侧列表和 ID 字段名里，避免作者误判。
     ///   - 日志标题 title 是公开字段但没有 [CfgProperty]，原版通用编辑器不会显示；
     ///     这里注入“日志标题”字段，仅在日志条目中显示。
     ///   - QQ 空间正文允许用 \n 分段，编辑器里改成多行输入，并把旧数据里的字面量 \n 显示成真实换行。
-    /// </summary>
     [HarmonyPatch(typeof(ModNormalEditView), "InitFields")]
     internal static class KZoneContentEditorFieldsPatch
     {

@@ -73,21 +73,19 @@ namespace StudentAgeEditorPlus.Patches
     //  对玩家零依赖：产出的 mod 是标准 JSON，原版客户端正常读取。
     // ═════════════════════════════════════════════════════════════════
 
-    /// <summary>
     /// 小游戏字段的公共工具：支持表、写入、过滤、校验、克隆体清理。
-    /// </summary>
     internal static class MiniGameUtil
     {
         // ── 支持表（依据每个小游戏界面 OnOpen/CloseView 的逐个审查） ──
 
-        /// <summary>从「对话」触发后能正常接回对话链的编号。</summary>
+        /// 从「对话」触发后能正常接回对话链的编号。
         public static readonly HashSet<int> TalkSupportedIds = new HashSet<int>
         {
             5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 20, 21, 22, 23, 24, 26,
             32, 35, 41, 43, 45, 46, 48
         };
 
-        /// <summary>从「选项」触发后能正常接回对话链的编号（对话表 + 仅选项可用的）。</summary>
+        /// 从「选项」触发后能正常接回对话链的编号（对话表 + 仅选项可用的）。
         public static readonly HashSet<int> OptionSupportedIds = new HashSet<int>
         {
             5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 20, 21, 22, 23, 24, 26,
@@ -96,16 +94,16 @@ namespace StudentAgeEditorPlus.Patches
             17, 18, 19, 27, 29, 34, 36, 37, 42, 44, 47
         };
 
-        /// <summary>只填编号（不带参数）就会在打开时报错卡死的编号。</summary>
+        /// 只填编号（不带参数）就会在打开时报错卡死的编号。
         public static readonly HashSet<int> NeedParamIds = new HashSet<int>
         {
             10, 11, 13, 16, 20, 21, 24, 26, 32, 45, 46, 48
         };
 
-        /// <summary>"参数驱动跳转"型：参数本身是跳转表，胜负分支(nextTalk/nextTalk2)无效。</summary>
+        /// "参数驱动跳转"型：参数本身是跳转表，胜负分支(nextTalk/nextTalk2)无效。
         public static readonly HashSet<int> ParamJumpIds = new HashSet<int> { 16, 45 };
 
-        /// <summary>常用编号的参数提示。</summary>
+        /// 常用编号的参数提示。
         private static string ParamHint(int _id)
         {
             switch (_id)
@@ -135,7 +133,7 @@ namespace StudentAgeEditorPlus.Patches
             "『效果』会在胜利后执行、『效果2』在失败后执行，\n" +
             "属性变化建议写在跳转后的对话里，避免重复生效。";
 
-        /// <summary>对话编辑器的悬浮说明。</summary>
+        /// 对话编辑器的悬浮说明。
         public const string TalkDesc =
             "这句对话播放完后触发的小游戏，留空＝不触发。\n" +
             "第一个数字是小游戏编号，后面可加参数（用逗号分隔）。\n" +
@@ -149,7 +147,7 @@ namespace StudentAgeEditorPlus.Patches
             "注意：这句对话不要同时挂选项，否则选项的跳转会被小游戏顶掉。\n" +
             CommonTail;
 
-        /// <summary>选项编辑器的悬浮说明。</summary>
+        /// 选项编辑器的悬浮说明。
         public const string OptionDesc =
             "选中此选项后触发的小游戏，留空＝不触发。\n" +
             "第一个数字是小游戏编号，后面可加参数（用逗号分隔）。\n" +
@@ -166,7 +164,7 @@ namespace StudentAgeEditorPlus.Patches
 
         // ── 写入 / 校验 ──
 
-        /// <summary>把输入框文本解析进 miniGame 列表（空文本＝清空）。</summary>
+        /// 把输入框文本解析进 miniGame 列表（空文本＝清空）。
         public static List<double> Parse(List<double> _current, string _txt)
         {
             if (_txt.NotEmpty())
@@ -177,10 +175,8 @@ namespace StudentAgeEditorPlus.Patches
             return _current;
         }
 
-        /// <summary>
         /// 按触发来源校验 miniGame 配置，返回警告文本；没问题返回 null。
         /// _isTalk：true=从对话触发，false=从选项触发。
-        /// </summary>
         public static string Validate(List<double> _miniGame, bool _isTalk)
         {
             if (_miniGame.IsEmpty())
@@ -212,10 +208,8 @@ namespace StudentAgeEditorPlus.Patches
             return null;
         }
 
-        /// <summary>
         /// 绑定输入框：onValueChanged 过滤非法字符并实时写入，onEndEdit 兜底写入并即时校验。
         /// _write 负责把文本写回目标 cfg；_isTalk 决定用哪张支持表校验。
-        /// </summary>
         public static void Bind(InputField _input, bool _isTalk, Action<string> _write)
         {
             _input.onValueChanged.AddListener(_txt =>
@@ -252,14 +246,12 @@ namespace StudentAgeEditorPlus.Patches
             });
         }
 
-        /// <summary>
         /// 清掉克隆体里有害的组件副本：
         /// · Description——Instantiate 不复制委托字段，克隆出来的是空壳；
         /// · LocalizeStringEvent（Unity 本地化组件，prefab 实测挂在
         ///   group_highlight / group_option_effect 的标签 Text 上）——它会在
         ///   本地化表就绪或刷新时把标签文字重置回源文案（"高亮人物："/"效果"），
         ///   不删掉的话我们改的"小游戏"标签随时会被顶回去。
-        /// </summary>
         public static void StripBadComponents(GameObject _clone)
         {
             foreach (var desc in _clone.GetComponentsInChildren<Description>(true))
@@ -276,7 +268,7 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>注入的小游戏控件引用（克隆体根 / 标签 / 输入框），供后续校正。</summary>
+    /// 注入的小游戏控件引用（克隆体根 / 标签 / 输入框），供后续校正。
     internal sealed class MiniGameWidget
     {
         public RectTransform root;
@@ -296,13 +288,11 @@ namespace StudentAgeEditorPlus.Patches
         public static bool TryGet(ModEvtEditView view, out MiniGameWidget w) => _widgets.TryGetValue(view, out w);
     }
 
-    /// <summary>
     /// B1. InitUI Postfix：克隆 group_highlight 生成小游戏输入框。
     ///
     /// 注意：group_content 没有布局组件（prefab 实测），子控件全是绝对定位。
     /// 克隆体必须手动移到 group_highlight 正下方一格（高度 70），
     /// 否则会与「高亮人物」完全重叠——标签和输入文字叠在一起、原框被挡住点不到。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "InitUI")]
     internal static class EvtEditMiniGameInitPatch
     {
@@ -380,7 +370,6 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>
     /// B2. Select Postfix：切换对话条目时加载 miniGame 值，
     /// 并对克隆体的位置与标签做幂等校正（双保险：即使有其他运行时逻辑
     /// 动过位置或文字，每次选中对话都会拉回正确状态）。
@@ -388,7 +377,6 @@ namespace StudentAgeEditorPlus.Patches
     /// 恢复勾选状态，靠小游戏走分支时判断是留空的——数据还在（游戏里分支
     /// 正常触发），但重进界面开关显示未勾、分支框被隐藏，作者会误以为配置丢失。
     /// SetTextWithoutNotify 不触发 onValueChanged，不会误写。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "Select")]
     internal static class EvtEditMiniGameSelectPatch
     {
@@ -433,10 +421,8 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>
     /// D1. 对话编辑器：勾选『有无分支』时给两个分支标签追加胜负提示。
     /// 原版每次 OnToggleCheck(true) 都会重设标签文字，所以在 Postfix 追加、按内容判重。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "OnToggleCheck")]
     internal static class EvtEditBranchHintPatch
     {
@@ -463,10 +449,8 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>
     /// B3. 保存前校验：设了小游戏的对话若编号不可用 / 参数缺失 / 分支缺失 / 与选项冲突，
     /// Toast 提醒作者。只提醒不拦截（作者可以先存草稿），一次只报第一处，避免刷屏。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "OnClickSave")]
     internal static class EvtEditMiniGameSaveCheckPatch
     {
@@ -530,10 +514,8 @@ namespace StudentAgeEditorPlus.Patches
         public static bool TryGet(ModEvtOptionView view, out MiniGameWidget w) => _widgets.TryGetValue(view, out w);
     }
 
-    /// <summary>
     /// C1. InitUI Postfix：克隆 group_option_effect 生成小游戏输入框。
     /// 选项编辑器的 group_content 带 VerticalLayoutGroup，克隆体按 SiblingIndex 自动排列。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtOptionView), "InitUI")]
     internal static class EvtOptionMiniGameInitPatch
     {
@@ -594,11 +576,9 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>
     /// C2. OnOpen Postfix：每次打开选项时加载 miniGame 值并重新绑定监听。
     /// cfg 是每次打开传入的对象，先清掉上次的监听再用新 cfg 绑定。
     /// 同时对标签文字做幂等校正（防止任何残留逻辑把"小游戏"改回"效果"）。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtOptionView), "OnOpen")]
     internal static class EvtOptionMiniGameOpenPatch
     {
@@ -659,10 +639,8 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>
     /// C3. 点『完成』时校验：编号不可用 / 参数缺失 / 失败分支（talkId2）为空时提醒。
     /// 选项的失败分支为空是玩家侧硬卡死（运行时 fail() 没有判空、选项不回退）。
-    /// </summary>
     [HarmonyPatch(typeof(ModEvtOptionView), "OnClickFinish")]
     internal static class EvtOptionMiniGameFinishCheckPatch
     {
@@ -709,10 +687,8 @@ namespace StudentAgeEditorPlus.Patches
     //  胜负选择框（明确写出小游戏名），选项列表给挂小游戏的选项加标记。
     // ───────────────────────────────────────────────────────────────────
 
-    /// <summary>
     /// E1. 预览推进：对话挂了小游戏时，弹"选择结果"确认框代替直接跳转，
     /// 让作者能确认小游戏已挂上、并能同时预览胜利/失败两条分支。
-    /// </summary>
     [HarmonyPatch(typeof(PreviewTalkView), "NextTalk")]
     internal static class PreviewTalkMiniGamePatch
     {
@@ -769,11 +745,9 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// <summary>
     /// E2. 预览的选项列表：挂了小游戏的选项在文本后追加「｛小游戏：名称｝」标记，
     /// 作者一眼能确认配置生效。点击后原版弹的"请选择分支"两个按钮
     /// （对话X/对话Y）即对应小游戏的胜利/失败。
-    /// </summary>
     [HarmonyPatch(typeof(PreviewTalkView), "OnOptionRender")]
     internal static class PreviewOptionMiniGameMarkPatch
     {
