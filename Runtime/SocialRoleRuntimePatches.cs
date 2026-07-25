@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using Config;
 using HarmonyLib;
@@ -11,6 +13,90 @@ using View.Main;
 
 namespace StudentAgeSocialRoleRuntime
 {
+    /// <summary>
+    /// 修复旧作品/旧存档留下的空生日。作者端新版本会阻止继续发布这种数据；
+    /// Runtime 仍需迁移已经写入 RoleModel 的 Birthday，否则恋人回合会反复索引失败。
+    /// </summary>
+    internal static class SocialRoleBirthdayRuntimeSafety
+    {
+        private static readonly MethodInfo BirthdaySetter =
+            AccessTools.PropertySetter(typeof(Role), nameof(Role.Birthday));
+
+        internal static void Repair(Role role, PersonCfg person, string context)
+        {
+            if (role == null || person == null || !SocialRoleProfileUtil.IsSocialRole(person)) return;
+
+            bool cfgValid = SocialRoleProfileUtil.TryValidateBirthday(person.birthday, out string cfgError);
+            bool roleValid = SocialRoleProfileUtil.TryValidateBirthday(role.Birthday, out _);
+            if (cfgValid && roleValid) return;
+
+            List<int> replacement = cfgValid
+                ? SocialRoleProfileUtil.CopyBirthday(person.birthday)
+                : new List<int> { 1995, 1, 1 };
+
+            // KZonePageProfileView 读取的是 PersonCfg，旧存档恋爱回合读取的是 Role；
+            // 两处必须在同一轮迁移中一起修复。这里只改运行时配置对象，不改作品文件。
+            if (!cfgValid)
+                person.birthday = new List<int>(replacement);
+            if (!roleValid)
+            {
+                if (BirthdaySetter == null)
+                    throw new MissingMethodException("Role.Birthday private setter not found");
+                BirthdaySetter.Invoke(role, new object[] { new List<int>(replacement) });
+            }
+
+            Plugin.Log?.LogWarning(
+                $"[SocialRoleBirthdaySafety] 已修复角色 {person.id} 的不完整生日"
+                + $"（{context}；原配置：{cfgError ?? "有效"}）。"
+                + (cfgValid ? "采用作品当前配置，旧档将在下次保存后永久修复。"
+                    : "作品配置本身仍无效，本次使用安全占位 1995,1,1；请作者重新发布修正版。"));
+        }
+    }
+
+    [HarmonyPatch(typeof(Role), nameof(Role.Load))]
+    internal static class SocialRoleBirthdayOnCreatePatch
+    {
+        private static void Postfix(Role __instance, int _cfgId)
+        {
+            try
+            {
+                if (Cfg.PersonCfgMap != null
+                    && Cfg.PersonCfgMap.TryGetValue(_cfgId, out PersonCfg person))
+                    SocialRoleBirthdayRuntimeSafety.Repair(__instance, person, "创建角色");
+            }
+            catch (Exception e)
+            {
+                Plugin.Log?.LogError($"[SocialRoleBirthdayOnCreate] {_cfgId}: {e}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(RoleMgr), "LoadEnd")]
+    internal static class SocialRoleBirthdayOnLoadPatch
+    {
+        // Prefix：确保原版 LoadEnd 中任何后续旧档检查开始前，NPC Birthday 已可安全索引。
+        private static void Prefix(RoleMgr __instance)
+        {
+            try
+            {
+                RoleModel model = Traverse.Create(__instance).Field("model").GetValue<RoleModel>();
+                if (model?.roleDict == null || Cfg.PersonCfgMap == null) return;
+
+                foreach (KeyValuePair<int, Role> pair in model.roleDict)
+                {
+                    if (pair.Key == 0 || pair.Value == null
+                        || !Cfg.PersonCfgMap.TryGetValue(pair.Key, out PersonCfg person))
+                        continue;
+                    SocialRoleBirthdayRuntimeSafety.Repair(pair.Value, person, "读取旧档");
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log?.LogError($"[SocialRoleBirthdayOnLoad] {e}");
+            }
+        }
+    }
+
     internal sealed class SocialProfileLabelDefaults
     {
         public string Primary;
@@ -50,6 +136,10 @@ namespace StudentAgeSocialRoleRuntime
         public bool IsMatch(StageTrigger trigger)
         {
             if (trigger == null || trigger.Type == StageTriggerType.None) return true;
+            // 作者端和公开格式都约定 ID <= 0 表示尚未配置、永不生效。
+            // 原生 GetEvtSaveData(0, pos) 会返回 0，而未选择过选项的历史明细
+            // selectId 默认也是 0；不在这里拦截会让空草稿条件意外成立。
+            if (trigger.EvtId <= 0) return false;
             try
             {
                 CommonEvtMgr mgr = Singleton<CommonEvtMgr>.Ins;

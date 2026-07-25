@@ -115,6 +115,7 @@ namespace StudentAgeSocialRoles
         // GUID 一经发布不得修改；EditorPlus、Runtime 和依赖清单都用它识别同一共享运行库。
         internal const string PluginGuid = "com.studentage.socialroleruntime";
         internal const string MinimumVersionForV2 = "0.2.0";
+        internal const string MinimumSafeVersion = "0.2.2";
         internal const int DataFormatVersion = 2;
     }
 
@@ -130,6 +131,60 @@ namespace StudentAgeSocialRoles
             int type = cfg.init[0];
             // 原生人物编辑器：2=男女主均可社交，3=仅男主档，4=仅女主档。
             return type == 2 || type == 3 || type == 4;
+        }
+
+        /// <summary>
+        /// 可社交角色的生日最终会被复制进玩家存档中的 Role.Birthday。
+        /// 原版恋爱回合至少索引到 month，企鹅空间资料会索引 year/month/day，
+        /// 所以作者数据必须是一个完整且真实存在的公历日期，不能只依赖资料页的显示兜底。
+        /// </summary>
+        public static bool TryValidateBirthday(IReadOnlyList<int> birthday, out string error)
+        {
+            error = null;
+            if (birthday == null || birthday.Count < 3)
+            {
+                error = "生日必须完整填写为 年,月,日（例如 1995,1,14）";
+                return false;
+            }
+
+            int year = birthday[0];
+            int month = birthday[1];
+            int day = birthday[2];
+            if (year < 1 || year > 9999)
+            {
+                error = $"生日年份无效：{year}";
+                return false;
+            }
+            if (month < 1 || month > 12)
+            {
+                error = $"生日月份无效：{month}";
+                return false;
+            }
+
+            int daysInMonth;
+            try
+            {
+                daysInMonth = DateTime.DaysInMonth(year, month);
+            }
+            catch
+            {
+                error = $"生日日期无效：{year},{month},{day}";
+                return false;
+            }
+
+            if (day < 1 || day > daysInMonth)
+            {
+                error = $"生日日期无效：{year},{month},{day}";
+                return false;
+            }
+            return true;
+        }
+
+        public static List<int> CopyBirthday(IReadOnlyList<int> birthday)
+        {
+            return birthday == null || birthday.Count < 3
+                ? null
+                : new List<int> { birthday[0], birthday[1], birthday[2] };
         }
     }
 

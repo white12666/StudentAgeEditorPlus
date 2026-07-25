@@ -20,7 +20,7 @@ namespace StudentAgeEditorPlus
     {
         public const string PluginGuid = "com.studentage.editorplus";
         public const string PluginName = "StudentAge Editor Plus";
-        public const string PluginVersion = "0.3.0";
+        public const string PluginVersion = "0.3.1";
 
         internal static ManualLogSource Log;
         internal static Harmony HarmonyInstance;
@@ -70,6 +70,15 @@ namespace StudentAgeEditorPlus
                     $"检测到 Social Role Runtime v{runtime.Metadata.Version}，" +
                     $"低于 V{SocialRoleRuntimeContract.DataFormatVersion} 资料所需的最低版本 " +
                     $"v{minimum}，请升级独立 Runtime。");
+                return;
+            }
+
+            var safeMinimum = new System.Version(SocialRoleRuntimeContract.MinimumSafeVersion);
+            if (runtime.Metadata.Version.CompareTo(safeMinimum) < 0)
+            {
+                Log.LogWarning(
+                    $"检测到 Social Role Runtime v{runtime.Metadata.Version}，资料显示可用，"
+                    + $"但缺少 v{safeMinimum} 起提供的旧档生日修复；请升级 Runtime。");
                 return;
             }
 

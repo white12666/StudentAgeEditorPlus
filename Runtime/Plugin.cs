@@ -6,6 +6,7 @@ using BepInEx.Logging;
 using HarmonyLib;
 using Sdk;
 using StudentAgeSocialRoles;
+using TheEntity;
 using View.Main;
 
 namespace StudentAgeSocialRoleRuntime
@@ -19,7 +20,7 @@ namespace StudentAgeSocialRoleRuntime
     {
         public const string PluginGuid = SocialRoleRuntimeContract.PluginGuid;
         public const string PluginName = "StudentAge Social Role Runtime";
-        public const string PluginVersion = "0.2.1";
+        public const string PluginVersion = "0.2.2";
 
         internal static ManualLogSource Log;
         private Harmony _harmony;
@@ -48,6 +49,8 @@ namespace StudentAgeSocialRoleRuntime
                 AccessTools.Method(typeof(RoleMgr), nameof(RoleMgr.GetClassName),
                     new[] { typeof(int) }),
                 AccessTools.DeclaredMethod(typeof(DetailSocialView), "RefreshProfile", Type.EmptyTypes),
+                AccessTools.Method(typeof(Role), nameof(Role.Load)),
+                AccessTools.DeclaredMethod(typeof(RoleMgr), "LoadEnd", Type.EmptyTypes),
                 AccessTools.Method(typeof(UIMgr), "Init", Type.EmptyTypes),
             };
             int installed = targets.Count(target =>

@@ -5,7 +5,7 @@
     <AssemblyName>StudentAgeSocialRoleRuntime</AssemblyName>
     <RootNamespace>StudentAgeSocialRoleRuntime</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <Version>0.2.1</Version>
+    <Version>0.2.2</Version>
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <DebugType>portable</DebugType>

@@ -430,9 +430,8 @@ namespace StudentAgeEditorPlus.Patches
                 if (!social)
                 {
                     SetCustomRowsActive(widget, false);
-                    // 角色退出可社交类型后清除扩展标记，避免以后在其它资料入口误套用旧身份。
-                    if (person != null && SocialRoleProfileCodec.TryRead(person, out _))
-                        person.note = SocialRoleProfileCodec.Write(person.note, null);
+                    // 暂时切换人物类型不能销毁作者资料。Runtime 本身还会检查 init[0]，
+                    // 所以标记留在 note 中时完全惰性；以后切回 2/3/4 可无损恢复全部阶段。
                 }
                 else
                 {
