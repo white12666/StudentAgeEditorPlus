@@ -55,9 +55,9 @@ namespace StudentAgeEditorPlus.Patches
     //    · MusicMiniGameView(41) 有 cfg==null 兜底 → 无参数安全。
     //
     //  另有通用运行时坑（编辑器保存时校验提醒）：
-    //    1. 失败分支的 fail() 无判空且从对话/选项进入时 fail 恒为 null：
-    //       选项 talkId2 为空 → 失败即空引用卡死（OptionCfg.GetNextTalk2 不回退）；
-    //       对话 nextTalk2 为空回退 nextTalk（胜负同路），nextTalk 也空则同样卡死。
+    //    1. 各小游戏的失败实现并不统一：选项 talkId2 为空时常会直接停住；
+    //       对话虽有 GetNextTalk2 的理论回退，但不少小游戏先检查回退结果、随后仍把
+    //       原始 nextTalk2 空列表交给 ShowTalk，因此不能依赖自动回退。两类都应明确填出口。
     //    2. 对话同时配置 option 和 miniGame 时，玩家选完任一选项后
     //       CommonEvtMgr.SelectOption 会检查所在对话的 miniGame 并劫持跳转，
     //       选项自身的 talkId/talkId2 失效。
@@ -73,19 +73,21 @@ namespace StudentAgeEditorPlus.Patches
     //  对玩家零依赖：产出的 mod 是标准 JSON，原版客户端正常读取。
     // ═════════════════════════════════════════════════════════════════
 
+    /// <summary>
     /// 小游戏字段的公共工具：支持表、写入、过滤、校验、克隆体清理。
+    /// </summary>
     internal static class MiniGameUtil
     {
         // ── 支持表（依据每个小游戏界面 OnOpen/CloseView 的逐个审查） ──
 
-        /// 从「对话」触发后能正常接回对话链的编号。
+        /// <summary>从「对话」触发后能正常接回对话链的编号。</summary>
         public static readonly HashSet<int> TalkSupportedIds = new HashSet<int>
         {
             5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 20, 21, 22, 23, 24, 26,
             32, 35, 41, 43, 45, 46, 48
         };
 
-        /// 从「选项」触发后能正常接回对话链的编号（对话表 + 仅选项可用的）。
+        /// <summary>从「选项」触发后能正常接回对话链的编号（对话表 + 仅选项可用的）。</summary>
         public static readonly HashSet<int> OptionSupportedIds = new HashSet<int>
         {
             5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 20, 21, 22, 23, 24, 26,
@@ -94,29 +96,178 @@ namespace StudentAgeEditorPlus.Patches
             17, 18, 19, 27, 29, 34, 36, 37, 42, 44, 47
         };
 
-        /// 只填编号（不带参数）就会在打开时报错卡死的编号。
+        /// <summary>只填编号（不带参数）就会在打开时报错卡死的编号。</summary>
         public static readonly HashSet<int> NeedParamIds = new HashSet<int>
         {
             10, 11, 13, 16, 20, 21, 24, 26, 32, 45, 46, 48
         };
 
-        /// "参数驱动跳转"型：参数本身是跳转表，胜负分支(nextTalk/nextTalk2)无效。
+        /// <summary>"参数驱动跳转"型：参数本身是跳转表，胜负分支(nextTalk/nextTalk2)无效。</summary>
         public static readonly HashSet<int> ParamJumpIds = new HashSet<int> { 16, 45 };
 
-        /// 常用编号的参数提示。
-        private static string ParamHint(int _id)
+        /// <summary>常用编号的参数提示。剧情图与原表单共用，避免两套文案漂移。</summary>
+        internal static string ParamHint(int _id)
         {
             switch (_id)
             {
-                case 11: return "参数=先手(0我先/1对方先),比赛编号，例 11,0,1";
-                case 13: return "参数=造句题目编号（SentenceMiniGameCfg 表）";
-                case 16: return "参数=4个对话ID，按砍价成功0~3次跳转，例 16,1001,1002,1003,1004";
-                case 21: return "参数=对手的人物ID，例 21,301";
+                case 10:
+                    return "填写打砖块关卡编号（BrickMinigameCfg）。示例：10, 1";
+                case 11:
+                    return "依次填写：先手（0=玩家，1=对手）、比赛编号。示例：11, 0, 1";
+                case 13:
+                    return "填写造句题目编号（SentenceMiniGameCfg）。示例：13, 1";
+                case 16:
+                    return "依次填写砍价成功 0 / 1 / 2 / 3 次后进入的四个对话编号。";
+                case 20:
+                    return "依次填写：最短出手间隔、最长出手间隔、成功率；至少填写第一项。";
+                case 21:
+                    return "填写对手的人物编号。示例：21, 301";
+                case 24:
+                    return "填写钢琴谱面编号（PianoCfg）。示例：24, 1";
                 case 26:
-                case 32: return "参数=先手(0我先/1对方先),等级编号，例 26,0,1";
-                case 45: return "参数=题库编号,连对0题跳转,连对1题跳转…";
-                default: return "需要至少1个参数（通常为难度或配置编号），只填编号会报错";
+                case 32:
+                    return "依次填写：先手（0=玩家，1=对手）、难度编号。示例：26, 0, 1";
+                case 45:
+                    return "先填题库编号，再依次填写连对 0 题、1 题……后进入的对话编号。";
+                case 46:
+                    return "填写编织关卡编号（WeavingMinigameCfg）。示例：46, 1";
+                case 48:
+                    return "填写绘画关卡编号（DrawingMinigameCfg）。示例：48, 1";
+                default: return NeedParamIds.Contains(_id)
+                    ? "这个玩法还需要至少一项设置，请参考它使用的配置表。"
+                    : "这个玩法无需额外设置。";
             }
+        }
+
+        /// <summary>读取第一个值作为小游戏整数编号；运行时本身会强转 int，这里拒绝歧义小数。</summary>
+        internal static bool TryGetGameId(
+            IList<double> values, out int gameId, out string error)
+        {
+            gameId = 0;
+            error = null;
+            if (values == null || values.Count == 0) return true;
+            double raw = values[0];
+            if (!IsFinite(raw) || raw <= 0d || raw > int.MaxValue
+                || Math.Truncate(raw) != raw)
+            {
+                error = "小游戏编号必须是大于 0 的有限整数，当前为 " + raw + "。";
+                return false;
+            }
+            gameId = (int)raw;
+            return true;
+        }
+
+        /// <summary>16/45 的后续 Talk 直接写在 miniGame 参数中，而非胜负端口字段。</summary>
+        internal static bool TryGetParamJumpTargets(
+            IList<double> values, out List<int> targets, out string error)
+        {
+            targets = new List<int>();
+            error = null;
+            int gameId;
+            if (!TryGetGameId(values, out gameId, out error)) return false;
+            if (!ParamJumpIds.Contains(gameId)) return true;
+
+            int firstTarget;
+            int targetCount;
+            if (gameId == 16)
+            {
+                if (values.Count < 5)
+                {
+                    error = "讲价(16)需要4个对话ID参数。";
+                    return false;
+                }
+                firstTarget = 1;
+                targetCount = 4; // 运行时只按成功 0~3 次读取前四个结果。
+            }
+            else
+            {
+                if (values.Count < 3)
+                {
+                    error = "连线(45)至少需要题库编号和一个结果对话ID。";
+                    return false;
+                }
+                int configId;
+                if (!TryPositiveInt(values[1], "连线题库编号", out configId, out error))
+                    return false;
+                firstTarget = 2;
+                targetCount = values.Count - firstTarget;
+                try
+                {
+                    LineMatchMinigameCfg cfg;
+                    if (Cfg.LineMatchMinigameCfgMap != null
+                        && Cfg.LineMatchMinigameCfgMap.TryGetValue(configId, out cfg)
+                        && cfg != null && cfg.lefts != null)
+                    {
+                        int required = cfg.lefts.Count + 1;
+                        if (targetCount != required)
+                        {
+                            error = "连线(45)题库 " + configId + " 有 "
+                                + cfg.lefts.Count + " 题，必须依次填写连对 0～"
+                                + cfg.lefts.Count + " 题的 " + required
+                                + " 个结果对话ID；当前填写 " + targetCount + " 个。";
+                            return false;
+                        }
+                    }
+                }
+                catch
+                {
+                    // 自定义题库尚未加载时无法知道题数，仍保留下方有限整数校验。
+                }
+            }
+
+            for (int i = 0; i < targetCount; i++)
+            {
+                int target;
+                string label = gameId == 16
+                    ? "讲价成功 " + i + " 次的对话ID"
+                    : "连对 " + i + " 题的对话ID";
+                if (!TryPositiveInt(values[firstTarget + i], label,
+                        out target, out error)) return false;
+                targets.Add(target);
+            }
+            return true;
+        }
+
+        internal static bool IsParamJump(IList<double> values)
+        {
+            int gameId;
+            string error;
+            return TryGetGameId(values, out gameId, out error)
+                   && ParamJumpIds.Contains(gameId);
+        }
+
+        internal static string GameName(int gameId)
+        {
+            try
+            {
+                MinigameCfg cfg;
+                if (Cfg.MinigameCfgMap != null
+                    && Cfg.MinigameCfgMap.TryGetValue(gameId, out cfg)
+                    && cfg != null && !string.IsNullOrWhiteSpace(cfg.name))
+                    return cfg.name.Trim();
+            }
+            catch { }
+            return "编号 " + gameId;
+        }
+
+        private static bool TryPositiveInt(
+            double raw, string label, out int value, out string error)
+        {
+            value = 0;
+            error = null;
+            if (!IsFinite(raw) || raw <= 0d || raw > int.MaxValue
+                || Math.Truncate(raw) != raw)
+            {
+                error = label + "必须是大于 0 的有限整数，当前为 " + raw + "。";
+                return false;
+            }
+            value = (int)raw;
+            return true;
+        }
+
+        private static bool IsFinite(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
         // ── 悬浮说明 ──
@@ -133,7 +284,7 @@ namespace StudentAgeEditorPlus.Patches
             "『效果』会在胜利后执行、『效果2』在失败后执行，\n" +
             "属性变化建议写在跳转后的对话里，避免重复生效。";
 
-        /// 对话编辑器的悬浮说明。
+        /// <summary>对话编辑器的悬浮说明。</summary>
         public const string TalkDesc =
             "这句对话播放完后触发的小游戏，留空＝不触发。\n" +
             "第一个数字是小游戏编号，后面可加参数（用逗号分隔）。\n" +
@@ -143,11 +294,11 @@ namespace StudentAgeEditorPlus.Patches
             "胜负分支：勾选『有无分支』开关，\n" +
             "『条件成立→后续对话』＝胜利后跳转的对话ID\n" +
             "『条件不成立→后续对话』＝失败后跳转的对话ID\n" +
-            "失败分支留空时，失败也会走胜利分支；两个都留空，失败后游戏会停住。\n" +
+            "请明确填写成功和失败出口；不同小游戏实现不一致，失败分支留空可能直接停住。\n" +
             "注意：这句对话不要同时挂选项，否则选项的跳转会被小游戏顶掉。\n" +
             CommonTail;
 
-        /// 选项编辑器的悬浮说明。
+        /// <summary>选项编辑器的悬浮说明。</summary>
         public const string OptionDesc =
             "选中此选项后触发的小游戏，留空＝不触发。\n" +
             "第一个数字是小游戏编号，后面可加参数（用逗号分隔）。\n" +
@@ -164,7 +315,7 @@ namespace StudentAgeEditorPlus.Patches
 
         // ── 写入 / 校验 ──
 
-        /// 把输入框文本解析进 miniGame 列表（空文本＝清空）。
+        /// <summary>把输入框文本解析进 miniGame 列表（空文本＝清空）。</summary>
         public static List<double> Parse(List<double> _current, string _txt)
         {
             if (_txt.NotEmpty())
@@ -175,15 +326,23 @@ namespace StudentAgeEditorPlus.Patches
             return _current;
         }
 
+        /// <summary>
         /// 按触发来源校验 miniGame 配置，返回警告文本；没问题返回 null。
         /// _isTalk：true=从对话触发，false=从选项触发。
+        /// </summary>
         public static string Validate(List<double> _miniGame, bool _isTalk)
         {
-            if (_miniGame.IsEmpty())
+            if (_miniGame.IsEmpty()) return null;
+            for (int i = 0; i < _miniGame.Count; i++)
             {
-                return null;
+                if (!IsFinite(_miniGame[i]))
+                    return "小游戏第 " + (i + 1)
+                           + " 项不能是 NaN 或 Infinity。";
             }
-            int id = (int)_miniGame[0];
+
+            int id;
+            string idError;
+            if (!TryGetGameId(_miniGame, out id, out idError)) return idError;
             var supported = _isTalk ? TalkSupportedIds : OptionSupportedIds;
             if (!supported.Contains(id))
             {
@@ -197,6 +356,12 @@ namespace StudentAgeEditorPlus.Patches
             {
                 return $"小游戏 {id} 必须带参数，只填编号进入时会报错卡住。{ParamHint(id)}";
             }
+            if ((id == 11 || id == 26 || id == 32) && _miniGame.Count < 3)
+            {
+                return "小游戏 " + id
+                    + " 需要两个参数（先手、比赛/等级编号），例 "
+                    + id + ",0,1；少填会在打开时越界卡住";
+            }
             if (id == 16 && _miniGame.Count < 5)
             {
                 return "讲价(16)需要4个对话ID参数：按砍价成功0~3次跳转，例 16,1001,1002,1003,1004；少填会在对应结果时卡住";
@@ -205,11 +370,20 @@ namespace StudentAgeEditorPlus.Patches
             {
                 return "连线(45)参数不足：第1个=题库编号，之后按连对题数依次填跳转对话ID";
             }
+            if (ParamJumpIds.Contains(id))
+            {
+                List<int> targets;
+                string targetError;
+                if (!TryGetParamJumpTargets(_miniGame, out targets, out targetError))
+                    return targetError;
+            }
             return null;
         }
 
+        /// <summary>
         /// 绑定输入框：onValueChanged 过滤非法字符并实时写入，onEndEdit 兜底写入并即时校验。
         /// _write 负责把文本写回目标 cfg；_isTalk 决定用哪张支持表校验。
+        /// </summary>
         public static void Bind(InputField _input, bool _isTalk, Action<string> _write)
         {
             _input.onValueChanged.AddListener(_txt =>
@@ -246,12 +420,14 @@ namespace StudentAgeEditorPlus.Patches
             });
         }
 
+        /// <summary>
         /// 清掉克隆体里有害的组件副本：
         /// · Description——Instantiate 不复制委托字段，克隆出来的是空壳；
         /// · LocalizeStringEvent（Unity 本地化组件，prefab 实测挂在
         ///   group_highlight / group_option_effect 的标签 Text 上）——它会在
         ///   本地化表就绪或刷新时把标签文字重置回源文案（"高亮人物："/"效果"），
         ///   不删掉的话我们改的"小游戏"标签随时会被顶回去。
+        /// </summary>
         public static void StripBadComponents(GameObject _clone)
         {
             foreach (var desc in _clone.GetComponentsInChildren<Description>(true))
@@ -268,7 +444,7 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// 注入的小游戏控件引用（克隆体根 / 标签 / 输入框），供后续校正。
+    /// <summary>注入的小游戏控件引用（克隆体根 / 标签 / 输入框），供后续校正。</summary>
     internal sealed class MiniGameWidget
     {
         public RectTransform root;
@@ -288,11 +464,13 @@ namespace StudentAgeEditorPlus.Patches
         public static bool TryGet(ModEvtEditView view, out MiniGameWidget w) => _widgets.TryGetValue(view, out w);
     }
 
+    /// <summary>
     /// B1. InitUI Postfix：克隆 group_highlight 生成小游戏输入框。
     ///
     /// 注意：group_content 没有布局组件（prefab 实测），子控件全是绝对定位。
     /// 克隆体必须手动移到 group_highlight 正下方一格（高度 70），
     /// 否则会与「高亮人物」完全重叠——标签和输入文字叠在一起、原框被挡住点不到。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "InitUI")]
     internal static class EvtEditMiniGameInitPatch
     {
@@ -342,11 +520,11 @@ namespace StudentAgeEditorPlus.Patches
                 // 分支输入框的占位灰字：写明小游戏胜负语义（原版 prefab 里没有针对性提示）
                 if (__instance.input_cond_true != null && __instance.input_cond_true.placeholder is Text pt1)
                 {
-                    pt1.text = "对话id（小游戏成功时进入）";
+                    pt1.text = "对话 ID（小游戏成功时进入）";
                 }
                 if (__instance.input_cond_false != null && __instance.input_cond_false.placeholder is Text pt2)
                 {
-                    pt2.text = "对话id（小游戏失败时进入）";
+                    pt2.text = "对话 ID（小游戏失败时进入）";
                 }
 
                 // 实时写入当前选中的对话（每次写入时取 curSelect，选中项会变）
@@ -370,6 +548,7 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
+    /// <summary>
     /// B2. Select Postfix：切换对话条目时加载 miniGame 值，
     /// 并对克隆体的位置与标签做幂等校正（双保险：即使有其他运行时逻辑
     /// 动过位置或文字，每次选中对话都会拉回正确状态）。
@@ -377,6 +556,7 @@ namespace StudentAgeEditorPlus.Patches
     /// 恢复勾选状态，靠小游戏走分支时判断是留空的——数据还在（游戏里分支
     /// 正常触发），但重进界面开关显示未勾、分支框被隐藏，作者会误以为配置丢失。
     /// SetTextWithoutNotify 不触发 onValueChanged，不会误写。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "Select")]
     internal static class EvtEditMiniGameSelectPatch
     {
@@ -421,8 +601,10 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
+    /// <summary>
     /// D1. 对话编辑器：勾选『有无分支』时给两个分支标签追加胜负提示。
     /// 原版每次 OnToggleCheck(true) 都会重设标签文字，所以在 Postfix 追加、按内容判重。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "OnToggleCheck")]
     internal static class EvtEditBranchHintPatch
     {
@@ -449,8 +631,10 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
+    /// <summary>
     /// B3. 保存前校验：设了小游戏的对话若编号不可用 / 参数缺失 / 分支缺失 / 与选项冲突，
     /// Toast 提醒作者。只提醒不拦截（作者可以先存草稿），一次只报第一处，避免刷屏。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "OnClickSave")]
     internal static class EvtEditMiniGameSaveCheckPatch
     {
@@ -488,12 +672,17 @@ namespace StudentAgeEditorPlus.Patches
                     bool hasLose = t.nextTalk2.NotEmpty() && t.nextTalk2[0] != 0;
                     if (!hasWin && !hasLose)
                     {
-                        ToastHelper.Toast($"对话 {t.id} 设了小游戏但没填任何后续对话：小游戏失败后游戏会停住，请勾选『有无分支』填上胜负分支");
+                        ToastHelper.Toast($"对话 {t.id} 设了小游戏但没填任何后续对话：小游戏结束后无法可靠继续，请勾选『有无分支』填上胜负分支");
+                        return;
+                    }
+                    if (!hasWin)
+                    {
+                        ToastHelper.Toast($"对话 {t.id} 没填成功分支（条件成立→后续对话），小游戏胜利后可能停住");
                         return;
                     }
                     if (!hasLose)
                     {
-                        ToastHelper.Toast($"提示：对话 {t.id} 没填失败分支（条件不成立→后续对话），小游戏胜负都会走同一段对话");
+                        ToastHelper.Toast($"对话 {t.id} 没填失败分支（条件不成立→后续对话）；不同小游戏不会统一回退，失败后可能停住，请明确填写");
                         return;
                     }
                 }
@@ -514,8 +703,10 @@ namespace StudentAgeEditorPlus.Patches
         public static bool TryGet(ModEvtOptionView view, out MiniGameWidget w) => _widgets.TryGetValue(view, out w);
     }
 
+    /// <summary>
     /// C1. InitUI Postfix：克隆 group_option_effect 生成小游戏输入框。
     /// 选项编辑器的 group_content 带 VerticalLayoutGroup，克隆体按 SiblingIndex 自动排列。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtOptionView), "InitUI")]
     internal static class EvtOptionMiniGameInitPatch
     {
@@ -576,9 +767,11 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
+    /// <summary>
     /// C2. OnOpen Postfix：每次打开选项时加载 miniGame 值并重新绑定监听。
     /// cfg 是每次打开传入的对象，先清掉上次的监听再用新 cfg 绑定。
     /// 同时对标签文字做幂等校正（防止任何残留逻辑把"小游戏"改回"效果"）。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtOptionView), "OnOpen")]
     internal static class EvtOptionMiniGameOpenPatch
     {
@@ -614,11 +807,11 @@ namespace StudentAgeEditorPlus.Patches
                 var talk2 = Traverse.Create(__instance).Field("input_talk_2").GetValue<InputField>();
                 if (talk1?.placeholder is Text t1)
                 {
-                    t1.text = "对话id（小游戏成功时进入）";
+                    t1.text = "对话 ID（小游戏成功时进入）";
                 }
                 if (talk2?.placeholder is Text t2)
                 {
-                    t2.text = "对话id（小游戏失败时进入）";
+                    t2.text = "对话 ID（小游戏失败时进入）";
                 }
 
                 // 开关显示校正：原版只按「判断」(check)是否非空恢复勾选状态，
@@ -639,8 +832,10 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
+    /// <summary>
     /// C3. 点『完成』时校验：编号不可用 / 参数缺失 / 失败分支（talkId2）为空时提醒。
     /// 选项的失败分支为空是玩家侧硬卡死（运行时 fail() 没有判空、选项不回退）。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtOptionView), "OnClickFinish")]
     internal static class EvtOptionMiniGameFinishCheckPatch
     {
@@ -687,8 +882,10 @@ namespace StudentAgeEditorPlus.Patches
     //  胜负选择框（明确写出小游戏名），选项列表给挂小游戏的选项加标记。
     // ───────────────────────────────────────────────────────────────────
 
+    /// <summary>
     /// E1. 预览推进：对话挂了小游戏时，弹"选择结果"确认框代替直接跳转，
     /// 让作者能确认小游戏已挂上、并能同时预览胜利/失败两条分支。
+    /// </summary>
     [HarmonyPatch(typeof(PreviewTalkView), "NextTalk")]
     internal static class PreviewTalkMiniGamePatch
     {
@@ -745,9 +942,11 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
+    /// <summary>
     /// E2. 预览的选项列表：挂了小游戏的选项在文本后追加「｛小游戏：名称｝」标记，
     /// 作者一眼能确认配置生效。点击后原版弹的"请选择分支"两个按钮
     /// （对话X/对话Y）即对应小游戏的胜利/失败。
+    /// </summary>
     [HarmonyPatch(typeof(PreviewTalkView), "OnOptionRender")]
     internal static class PreviewOptionMiniGameMarkPatch
     {

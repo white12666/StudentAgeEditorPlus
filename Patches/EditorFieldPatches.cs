@@ -423,7 +423,7 @@ namespace StudentAgeEditorPlus.Patches
                     bool isBlog = currentContentIsBlog = cur != null && KZoneEditorTextUtil.IsBlogId(cur.id);
 
                     if (fieldName == "id" && cur != null)
-                        cell.txt_name.text = isBlog ? "ID（日志）" : "ID（说说）";
+                        cell.txt_name.text = isBlog ? "编号（日志 ID）" : "编号（说说 ID）";
 
                     if (fieldName == "title")
                     {

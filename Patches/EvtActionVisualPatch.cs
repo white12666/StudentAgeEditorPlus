@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text;
 using Config;
 using GenUI.Common;
@@ -13,6 +16,7 @@ using View.Mod;
 
 namespace StudentAgeEditorPlus.Patches
 {
+    /// <summary>
     /// 改进：事件对话编辑器的"动作指令"缺少可视化。
     ///
     /// 作者反馈：动作指令只能填一串数字（如 1,3004,300），既看不出每个数字
@@ -34,19 +38,21 @@ namespace StudentAgeEditorPlus.Patches
     ///      内容多时溢出屏幕上边缘（用户实测反馈）→ 改为向下弹出 + 屏幕
     ///      边缘保护（提示框置顶渲染，盖住下方控件无妨，鼠标正悬在输入框上）。
     ///   2. 屏幕效果悬浮提示：input_screeneffect 同样加悬浮翻译（用户要求）。
-    ///   3. 舞台位移示意：当前选中的对话若带横移/纵移指令，舞台上对应
-    ///      人物直接站到移动后的位置。只反映当前这句对话的移动
-    ///     （用户确认的设计取舍，不沿剧情链累计历史移动）。
-    ///   4. "预览本句"按钮：从当前选中的对话直接开始播放剧情预览
-    ///     （传入编辑器内存中的最新数据，未保存的修改也能立即预览）。
+    ///   3. 舞台状态示意：沿编辑器选定的前驱链回放到当前对话结束，舞台上的
+    ///      人物显示历史累计 + 当前句的横移/纵移及 3000 表情；退场重进、换景
+    ///      或换方位时按真实播放器语义处理，分支合流沿 FindRoles 首个前驱解析。
+    ///   4. "预览本句"按钮：先按唯一前驱路径建立当前句执行前的完整播放器快照
+    ///      （人物/槽位/移动/外观/背景/滤镜/手机/CG/BGM），再播放当前原始动作；
+    ///      历史动作不进入当前 Tween，避免并发错位。
     ///
     /// 关键换算：编辑器舞台 = 真实对话画面的 0.7 倍缩放
     ///（证据：真实同侧多人间距 300px（NewTalkView.UpdatePosRoles）
     ///  ↔ 编辑器槽位间距 210px；立绘 localScale 也是 0.7）。
     /// 因此舞台位移 = 指令偏移 × 0.7。
+    /// </summary>
     internal static class TalkActionTranslator
     {
-        /// 动作/效果码 → 中文名（对照 Config.TalkAnimeDefine 硬编码，配置表无名称字段）。
+        /// <summary>动作/效果码 → 中文名（对照 Config.TalkAnimeDefine 硬编码，配置表无名称字段）。</summary>
         private static readonly Dictionary<int, string> ActionNames = new Dictionary<int, string>
         {
             { 1001, "放置进场" },
@@ -54,7 +60,7 @@ namespace StudentAgeEditorPlus.Patches
             { 1003, "底部升起进场" },
             { 2001, "退场" },
             { 2002, "淡出退场" },
-            { 3000, "换姿势" },
+            { 3000, "换表情/姿势" },
             { 3001, "跳跃" },
             { 3002, "抖动" },
             { 3003, "放大" },
@@ -63,7 +69,7 @@ namespace StudentAgeEditorPlus.Patches
             { 3006, "换装" },
             { 3007, "瞬间转身" },
             { 3008, "纵向移动" },
-            { 3009, "表情" },
+            { 3009, "表情气泡" },
             { 3010, "摇头" },
             { 3011, "点头" },
             { 3012, "变剪影" },
@@ -92,7 +98,7 @@ namespace StudentAgeEditorPlus.Patches
             { 5002, "歌词" },
         };
 
-        /// 把整个 roles 列表翻译成多行"人名：动作(参数)"。
+        /// <summary>把整个 roles 列表翻译成多行"人名：动作(参数)"。</summary>
         public static string Translate(List<List<float>> roles, Dictionary<int, PersonCfg> personCfgs)
         {
             if (roles == null || roles.Count == 0) return null;
@@ -107,8 +113,10 @@ namespace StudentAgeEditorPlus.Patches
             return sb.Length > 0 ? sb.ToString() : null;
         }
 
+        /// <summary>
         /// 翻译屏幕效果字段（screenEffect：[效果码, 参数...]，一条对话只有一条）。
         /// 参数语义对照 NewTalkView 中对 cfg.screenEffect 的各分支处理。
+        /// </summary>
         public static string TranslateScreenEffect(List<float> se)
         {
             if (se == null || se.Count == 0) return null;
@@ -173,8 +181,10 @@ namespace StudentAgeEditorPlus.Patches
                 : $"{person}：{actionName} {parms}";
         }
 
+        /// <summary>
         /// 按动作类型解释参数。参数语义对照 NewTalkView.HelpCheckRoleAction
         ///（反编译 L2440-2716），只解释高频动作，其余原样列出数字。
+        /// </summary>
         private static string DescribeParams(int actionId, List<float> entry)
         {
             // entry: [人物ID, 动作码, p0, p1, ...]
@@ -222,10 +232,10 @@ namespace StudentAgeEditorPlus.Patches
                     parts.Add($"{Num(Has(0) && P(0) != 0f ? P(0) : 1.1f)}倍");
                     if (Has(1) && P(1) > 0f) parts.Add($"延迟{Num(P(1))}秒");
                     break;
-                case 3000: if (Has(0)) parts.Add($"姿势{(int)P(0)}"); break;
+                case 3000: if (Has(0)) parts.Add($"表情/姿势{(int)P(0)}"); break;
                 case 3006: if (Has(0)) parts.Add($"服装{(int)P(0)}"); break;
                 case 3014: if (Has(0)) parts.Add($"发型{(int)P(0)}"); break;
-                case 3009: // 表情：[编号, 延迟]
+                case 3009: // 表情气泡：[编号, 延迟]
                     if (Has(0)) parts.Add($"编号{(int)P(0)}");
                     if (Has(1) && P(1) > 0f) parts.Add($"延迟{Num(P(1))}秒");
                     break;
@@ -241,8 +251,10 @@ namespace StudentAgeEditorPlus.Patches
             return parts.Count > 0 ? $"({string.Join("、", parts)})" : null;
         }
 
+        /// <summary>
         /// 累加某人物在当前对话中所有横移/纵移指令的偏移量（真实画面像素）。
         /// 供舞台位移示意使用。
+        /// </summary>
         public static Vector2 GetTalkOffset(TalkCfg talk, int personId)
         {
             var offset = Vector2.zero;
@@ -267,7 +279,7 @@ namespace StudentAgeEditorPlus.Patches
             return $"人物{personId}";
         }
 
-        /// TalkAxis：1=左 2=右 3=中（View.Evt.TalkAxis 枚举，已核实）。
+        /// <summary>TalkAxis：1=左 2=右 3=中（View.Evt.TalkAxis 枚举，已核实）。</summary>
         private static string AxisName(int axis)
         {
             switch (axis)
@@ -280,25 +292,512 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// 数字格式化：去掉多余小数位（300 而非 300.0）。
+        /// <summary>数字格式化：去掉多余小数位（300 而非 300.0）。</summary>
         private static string Num(float v) => v.ToString("0.##");
     }
 
+    /// <summary>
+    /// 为编辑器内预览加载当前 Mod 自己的辅助配置表。
+    ///
+    /// PreviewTalkView 的 3000 表情动作对图片型人物依赖 ModFaceCfg；若调用方
+    /// 不传第 10 个参数，它只会回退到游戏当前已加载的全局表，尚在编辑的 Mod
+    /// 自定义表情通常不在其中。原版 ModPreviewTipsView 会从当前 Mod 目录加载
+    /// face/item/book 三张表并传满 12 个参数，这里复用相同语义，同时在文件缺失
+    /// 或格式错误时安全回退全局表，不能让一张辅助表阻断整段剧情预览。
+    /// </summary>
+    internal static class EvtPreviewConfigLoader
+    {
+        private sealed class ViewConfigCache
+        {
+            public string ModRoot;
+            public string Language;
+            public string FacePath;
+            public DateTime FaceWriteTimeUtc;
+            public Dictionary<int, ModFaceCfg> Faces;
+        }
+
+        private static readonly ConditionalWeakTable<ModEvtEditView, ViewConfigCache> ViewCaches = new();
+
+        /// <summary>供右侧静态小舞台使用；同一编辑器视图生命周期只读盘一次。</summary>
+        internal static Dictionary<int, ModFaceCfg> GetFaces(ModEvtEditView view)
+        {
+            if (view == null) return Merge(null, Cfg.ModFaceCfgMap);
+
+            ViewConfigCache cache = ViewCaches.GetValue(view, _ => new ViewConfigCache());
+            string modRoot = null;
+            try
+            {
+                modRoot = Traverse.Create(view).Field("modRoot").GetValue<string>();
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[EvtPreviewConfig] 无法读取当前 Mod 路径，表情回退全局配置: {e.Message}");
+            }
+
+            string language = LocalizationMgr.Lang;
+            string facePath = string.IsNullOrEmpty(modRoot)
+                ? null
+                : Path.Combine(modRoot, "Cfgs/" + language, "ModFaceCfg.json");
+            DateTime writeTime = facePath != null && File.Exists(facePath)
+                ? File.GetLastWriteTimeUtc(facePath)
+                : DateTime.MinValue;
+
+            if (cache.Faces == null
+                || !string.Equals(cache.ModRoot, modRoot, StringComparison.Ordinal)
+                || !string.Equals(cache.Language, language, StringComparison.Ordinal)
+                || !string.Equals(cache.FacePath, facePath, StringComparison.Ordinal)
+                || cache.FaceWriteTimeUtc != writeTime)
+            {
+                cache.ModRoot = modRoot;
+                cache.Language = language;
+                cache.FacePath = facePath;
+                cache.FaceWriteTimeUtc = writeTime;
+                cache.Faces = LoadFaces(modRoot);
+            }
+            return cache.Faces;
+        }
+
+        internal static Dictionary<int, ModFaceCfg> LoadFaces(string modRoot)
+        {
+            return LoadMerged(modRoot, "ModFaceCfg.json", Cfg.ModFaceCfgMap, cfg => cfg.id);
+        }
+
+        internal static Dictionary<int, BgCfg> LoadBackgrounds(string modRoot)
+        {
+            return LoadMerged(modRoot, "BgCfg.json", Cfg.BgCfgMap, cfg => cfg.id);
+        }
+
+        internal static Dictionary<int, CGCfg> LoadCgs(string modRoot)
+        {
+            return LoadMerged(modRoot, "CGCfg.json", Cfg.CGCfgMap, cfg => cfg.id);
+        }
+
+        internal static Dictionary<int, AudioCfg> LoadAudios(string modRoot)
+        {
+            return LoadMerged(modRoot, "AudioCfg.json", Cfg.AudioCfgMap, cfg => cfg.id);
+        }
+
+        internal static Dictionary<int, EvtCfg> LoadEvents(string modRoot)
+        {
+            return LoadMerged(modRoot, "EvtCfg.json", Cfg.EvtCfgMap, cfg => cfg.id);
+        }
+
+        internal static Dictionary<int, ItemCfg> LoadItems(string modRoot)
+        {
+            return LoadMerged(modRoot, "ItemCfg.json", Cfg.ItemCfgMap, cfg => cfg.id);
+        }
+
+        internal static Dictionary<int, BookCfg> LoadBooks(string modRoot)
+        {
+            return LoadMerged(modRoot, "BookCfg.json", Cfg.BookCfgMap, cfg => cfg.id);
+        }
+
+        private static Dictionary<int, T> LoadMerged<T>(
+            string modRoot,
+            string fileName,
+            Dictionary<int, T> global,
+            Func<T, int> getId)
+            where T : class
+        {
+            var result = new Dictionary<int, T>();
+            if (!string.IsNullOrEmpty(modRoot))
+            {
+                string path = Path.Combine(
+                    modRoot, "Cfgs/" + LocalizationMgr.Lang, fileName);
+                if (File.Exists(path))
+                {
+                    try
+                    {
+                        Dictionary<string, T> local = ModCtrl.DeserializeJsonToCfgMap<T>(path);
+                        if (local != null)
+                        {
+                            foreach (KeyValuePair<string, T> entry in local)
+                            {
+                                if (entry.Value == null) continue;
+                                result[getId(entry.Value)] = entry.Value;
+                            }
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        Plugin.Log.LogWarning(
+                            $"[EvtPreviewConfig] 读取 {fileName} 失败，预览将回退全局配置: {e.Message}");
+                    }
+                }
+            }
+
+            if (global != null)
+            {
+                foreach (KeyValuePair<int, T> entry in global)
+                {
+                    // 当前 Mod 的同 ID 配置优先，与原版 ModPreviewTipsView 一致。
+                    if (!result.ContainsKey(entry.Key)) result.Add(entry.Key, entry.Value);
+                }
+            }
+            return result;
+        }
+
+        private static Dictionary<int, T> Merge<T>(
+            Dictionary<int, T> local,
+            Dictionary<int, T> global)
+        {
+            var result = new Dictionary<int, T>();
+            if (local != null)
+            {
+                foreach (KeyValuePair<int, T> entry in local) result[entry.Key] = entry.Value;
+            }
+            if (global != null)
+            {
+                foreach (KeyValuePair<int, T> entry in global)
+                {
+                    if (!result.ContainsKey(entry.Key)) result.Add(entry.Key, entry.Value);
+                }
+            }
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// 以单次资源请求渲染编辑器预览人物。原 TalkRoleItem.SetData 的图片分支只能
+    /// 使用全局 ModFaceCfg；若先让它加载默认脸、再在 Postfix 改成当前 Mod 表情，
+    /// 两个异步请求会竞态，后完成的旧默认图可能覆盖表情。本 helper 直接选择最终
+    /// URL；L2D 也从首次 SetL2D 就传入正确表情和剪影颜色。
+    /// </summary>
+    internal static class PreviewRoleRenderer
+    {
+        internal static void Render(
+            PersonCfg person,
+            Cell_NewTalkRoleItemUI cell,
+            int order,
+            int colorId,
+            float alpha,
+            int cloth,
+            int pose,
+            bool flip,
+            int hair,
+            int gradeState,
+            GenderDefine gender,
+            Dictionary<int, ModFaceCfg> faces)
+        {
+            if (person == null || cell == null) return;
+            Color color = Singleton<ColorCtrl>.Ins.Get(colorId);
+            cell.canvasgroup_role.alpha = alpha;
+
+            if (person.IsUseImg(gradeState, cloth))
+            {
+                cell.l2d_role.gameObject.SetActive(false);
+                string expressionUrl = RoleMgr.GetExpressionIcon(
+                    person, cloth, Mathf.Max(0, pose), gradeState, faces);
+                string defaultUrl = person.GetFullIcon(cloth, gender, gradeState);
+                // ModFaceCfg 记录存在但外部文件已被移动/删除时，不要发起一个
+                // 注定失败的表情请求；回退该服装默认立绘。默认图也缺失时，
+                // 请求守卫会清空旧 Sprite，绝不把上一人物/上一表情留在画面上。
+                string url = IsMissingExternalFile(expressionUrl)
+                    ? defaultUrl
+                    : (string.IsNullOrEmpty(expressionUrl) ? defaultUrl : expressionUrl);
+                cell.icon_role.SetTextureUrl(url);
+
+                cell.icon_role.gameObject.SetActive(true);
+                cell.icon_role.image.color = color;
+                cell.canvasgroup_role.alpha = alpha;
+                var (x, y, scale) = person.GetUrlParm(gradeState, gender);
+                cell.icon_role.transform.localScale = new Vector3(
+                    scale * (flip ? -1f : 1f), scale, scale);
+                cell.icon_role.transform.SetPosX(x);
+                cell.icon_role.transform.SetPosY(y);
+            }
+            else
+            {
+                cell.icon_role.gameObject.SetActive(false);
+                cell.l2d_role.gameObject.SetActive(true);
+                int expression = pose >= 0
+                    ? RoleMgr.GetExpression(person.id, pose, gradeState, gender)
+                    : -1;
+                cell.l2d_role.SetL2D(
+                    person.id, order, false, alpha, cloth, flip ? 1 : 0,
+                    ColorCtrl.GetColorStr(colorId), expression, hair,
+                    gradeState, gender, L2DLoadType.New);
+            }
+
+            if ((person.bubbleParm != null && person.bubbleParm.Count > 0)
+                || (person.bubbleParm2 != null && person.bubbleParm2.Count > 0))
+            {
+                cell.img_bubble_face.rectTransform.anchoredPosition =
+                    person.GetBubblePos(gradeState, gender);
+            }
+            else
+            {
+                cell.img_bubble_face.rectTransform.anchoredPosition =
+                    new Vector2(0f, 1150f);
+            }
+        }
+
+        private static bool IsMissingExternalFile(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return false;
+            string fullPath = null;
+            if (Path.IsPathRooted(url))
+                fullPath = url;
+            else if (url.StartsWith("Mods", StringComparison.Ordinal))
+                fullPath = Singleton<ModCtrl>.Ins.GetFullUrl(url);
+            return fullPath != null && !File.Exists(fullPath);
+        }
+    }
+
+    /// <summary>
+    /// PreviewTalkView 和编辑器静态小舞台的图片人物在进场默认脸、3000 表情、
+    /// 3006 服装或切换 Talk 时可能连续发起多个异步图片请求；原 UISprite 回调不
+    /// 校验 URL，旧请求晚到会覆盖新状态。仅为这两个明确的角色预览池注册请求
+    /// 代次，保证始终只有“最后一次有效请求”可以写回图片；其它 UI 不受影响。
+    /// </summary>
+    internal static class PreviewSpriteRequestGuard
+    {
+        private sealed class RequestState
+        {
+            public int Generation;
+        }
+
+        private static readonly ConditionalWeakTable<UISprite, RequestState> States = new();
+        private static readonly FieldInfo UrlField =
+            AccessTools.Field(typeof(UISprite), "<url>k__BackingField");
+
+        internal static void Register(UISprite sprite)
+        {
+            if (sprite != null) States.GetValue(sprite, _ => new RequestState());
+        }
+
+        internal static bool TrySetTexture(
+            UISprite sprite, string requestedUrl, bool showWhenComplete)
+        {
+            if (sprite == null || !States.TryGetValue(sprite, out RequestState state))
+                return false;
+
+            sprite.showWhenComp = showWhenComplete;
+            if (requestedUrl == null)
+            {
+                // 清空也是一次新请求：必须让此前尚未完成的加载全部失效。
+                unchecked { ++state.Generation; }
+                SetUrl(sprite, null);
+                if (sprite.image != null) sprite.image.sprite = null;
+                return true;
+            }
+
+            bool external = false;
+            string expected = requestedUrl;
+            if (!string.IsNullOrEmpty(requestedUrl))
+            {
+                if (Path.IsPathRooted(requestedUrl))
+                {
+                    external = true;
+                }
+                else if (requestedUrl.StartsWith("Mods", StringComparison.Ordinal))
+                {
+                    external = true;
+                    expected = Singleton<ModCtrl>.Ins.GetFullUrl(requestedUrl);
+                }
+            }
+            if (!external)
+            {
+                // ResPath 是游戏程序集 internal，插件无法直接调用；其当前
+                // ToTextureUrl 实现就是同一 Path.Combine("Textures/", url)。
+                expected = Path.Combine(
+                    "Textures/", LocalizationMgr.GetLocalizeUrl(requestedUrl));
+            }
+
+            return Start(sprite, state, expected, external, showWhenComplete,
+                isAtlas: false);
+        }
+
+        internal static bool TrySetAtlas(
+            UISprite sprite, string requestedUrl, bool showWhenComplete)
+        {
+            if (sprite == null || !States.TryGetValue(sprite, out RequestState state))
+                return false;
+
+            // 角色池实际使用非空占位 atlas；null/empty 沿用原 UISprite 行为，
+            // 避免扩大补丁语义面。非空 atlas 仍会推进同一代次并淘汰旧贴图请求。
+            if (string.IsNullOrEmpty(requestedUrl)) return false;
+            sprite.showWhenComp = showWhenComplete;
+
+            bool external = false;
+            string expected = requestedUrl;
+            if (!string.IsNullOrEmpty(requestedUrl))
+            {
+                if (Path.IsPathRooted(requestedUrl))
+                {
+                    external = true;
+                }
+                else if (requestedUrl.StartsWith("Mods", StringComparison.Ordinal))
+                {
+                    external = true;
+                    expected = Singleton<ModCtrl>.Ins.GetFullUrl(requestedUrl);
+                }
+            }
+
+            return Start(sprite, state, expected, external, showWhenComplete,
+                isAtlas: true);
+        }
+
+        private static bool Start(
+            UISprite sprite,
+            RequestState state,
+            string expected,
+            bool external,
+            bool showWhenComplete,
+            bool isAtlas)
+        {
+            // 缺文件同样代表“最新状态已经改变”：必须先推进代次、清掉旧图，
+            // 否则上一请求晚到后仍会把上一人物/表情写回当前槽位。
+            if (external && !File.Exists(expected))
+            {
+                unchecked { ++state.Generation; }
+                SetUrl(sprite, null);
+                if (sprite.image != null)
+                {
+                    sprite.image.sprite = null;
+                    sprite.image.gameObject.SetActive(false);
+                }
+                Plugin.Log.LogWarning($"[PreviewSpriteGuard] 找不到图片: {expected}");
+                return true;
+            }
+
+            if (string.Equals(sprite.url, expected, StringComparison.Ordinal))
+            {
+                if (showWhenComplete && sprite.image != null)
+                    sprite.image.gameObject.SetActive(true);
+                return true;
+            }
+
+            // 只有真的开始新加载时才推进代次。同 URL 去重不能推进，
+            // 否则第一次仍在途的合法回调会被自己判旧，图片将永远不落盘。
+            int generation = unchecked(++state.Generation);
+            SetUrl(sprite, expected);
+            if (sprite.image != null && showWhenComplete)
+            {
+                // 精确保持 UISprite 原语义：内部资源请求开始时立即显示；
+                // 外部文件请求开始时先隐藏，完成后 SetSprite 再显示。
+                // showWhenComplete=false 时原方法不会主动改变现有显隐状态。
+                sprite.image.gameObject.SetActive(!external);
+            }
+
+            Action<Sprite> completed = loaded =>
+            {
+                if (!States.TryGetValue(sprite, out RequestState current)
+                    || !ReferenceEquals(current, state)
+                    || current.Generation != generation
+                    || !string.Equals(sprite.url, expected, StringComparison.Ordinal))
+                    return;
+
+                if (loaded == null)
+                {
+                    Plugin.Log.LogWarning($"[PreviewSpriteGuard] 找不到图片: {expected}");
+                    SetUrl(sprite, null);
+                    if (sprite.image != null)
+                    {
+                        sprite.image.sprite = null;
+                        sprite.image.gameObject.SetActive(false);
+                    }
+                    return;
+                }
+                sprite.SetSprite(loaded);
+            };
+
+            if (external)
+                ResMgr.LoadExternSpriteAsync(expected, completed, false);
+            else if (isAtlas)
+                AtlasMgr.GetSpriteAsync(expected, completed);
+            else
+                ResMgr.LoadSpriteAsync(expected, completed);
+            return true;
+        }
+
+        private static void SetUrl(UISprite sprite, string value)
+        {
+            if (UrlField != null) UrlField.SetValue(sprite, value);
+            else Traverse.Create(sprite).Property("url").SetValue(value);
+        }
+    }
+
+    [HarmonyPatch(typeof(PreviewTalkView), "OnRenderRole", typeof(UICell))]
+    internal static class PreviewTalkSpriteGuardInitPatch
+    {
+        private static bool Prefix(PreviewTalkView __instance, UICell _cell)
+        {
+            try
+            {
+                if (_cell is Cell_NewTalkRoleItemUI cell)
+                {
+                    PreviewSpriteRequestGuard.Register(cell.icon_role);
+                    // 启动快照人物必须第一次就用最终服装/表情渲染，不能先发默认脸
+                    // 请求再覆盖；否则两个异步加载仍可能竞态。
+                    if (TalkPreviewBootstrapRuntime.TryRenderInjectedRole(__instance, cell))
+                        return false;
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError($"[PreviewSpriteGuard.OnRenderRole] {e}");
+            }
+            return true;
+        }
+    }
+
+    [HarmonyPatch(typeof(UISprite), nameof(UISprite.SetTextureUrl),
+        new[] { typeof(string), typeof(bool) })]
+    internal static class PreviewTextureRequestGuardPatch
+    {
+        private static bool Prefix(UISprite __instance, string _url, bool _showWhenComp)
+        {
+            try
+            {
+                return !PreviewSpriteRequestGuard.TrySetTexture(
+                    __instance, _url, _showWhenComp);
+            }
+            catch (Exception e)
+            {
+                // 请求保护本身绝不能阻断图片加载；异常时放行游戏原方法。
+                Plugin.Log.LogError($"[PreviewSpriteGuard.Texture] {e}");
+                return true;
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(UISprite), nameof(UISprite.SetAtlasUrl),
+        new[] { typeof(string), typeof(bool) })]
+    internal static class PreviewAtlasRequestGuardPatch
+    {
+        private static bool Prefix(UISprite __instance, string _url, bool _showWhenComp)
+        {
+            try
+            {
+                return !PreviewSpriteRequestGuard.TrySetAtlas(
+                    __instance, _url, _showWhenComp);
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError($"[PreviewSpriteGuard.Atlas] {e}");
+                return true;
+            }
+        }
+    }
+
+    /// <summary>
     /// 功能 1+2：动作指令 / 屏幕效果的悬浮翻译。
     /// InitUI 时给两个输入框注册鼠标进入/移出回调（游戏自带的
     /// Sdk.AddMouseEnter/AddMouseExit 扩展，原版未占用这两个输入框的回调）：
     /// 悬浮 → 输入框下方弹出提示框显示翻译（置顶渲染 + 屏幕边缘保护）；
     /// 移出 → 隐藏。onEndEdit 后若提示框正显示着，内容同步刷新。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "InitUI")]
     internal static class EvtActionHintInitPatch
     {
         private const string TooltipObjName = "EvtActionTooltip";
 
-        /// 提示框（挂在编辑器根节点下，视图关闭时随之销毁）。
+        /// <summary>提示框（挂在编辑器根节点下，视图关闭时随之销毁）。</summary>
         private static GameObject _tooltip;
         private static Text _tooltipText;
 
-        /// 提示框当前锚定的输入框（null = 未显示），用于 onEndEdit 时判断是否要刷新内容。
+        /// <summary>提示框当前锚定的输入框（null = 未显示），用于 onEndEdit 时判断是否要刷新内容。</summary>
         private static InputField _hoverInput;
 
         private static void Postfix(ModEvtEditView __instance)
@@ -358,7 +857,7 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// 切换选中对话（含删除后 Select(null)）时隐藏提示框，避免残留旧内容。
+        /// <summary>切换选中对话（含删除后 Select(null)）时隐藏提示框，避免残留旧内容。</summary>
         internal static void OnSelectChanged()
         {
             HideTooltip();
@@ -417,10 +916,12 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
+        /// <summary>
         /// 提示框定位：贴在输入框左下角的下方 6px（向下弹出——上一版向上弹出
         /// 时内容多会溢出屏幕上边缘）。再按编辑器根节点的矩形做边缘保护：
         /// 底部放不下就上抬，右侧超界就左移。全程在根节点本地坐标系计算，
         /// 不受分辨率与画布缩放影响。
+        /// </summary>
         private static void PositionBelow(RectTransform bgRt, InputField input)
         {
             var rootRt = bgRt.parent as RectTransform;
@@ -455,9 +956,11 @@ namespace StudentAgeEditorPlus.Patches
                 _tooltip.SetActive(false);
         }
 
+        /// <summary>
         /// 提示框 = 深色半透明背景 Image + 文字 Text，挂在编辑器根节点下
         ///（跟随视图销毁）。整体不参与鼠标点击判定，避免遮住输入框后
         /// 触发"移出"回调造成闪烁。
+        /// </summary>
         private static GameObject GetOrCreateTooltip(ModEvtEditView view)
         {
             if (_tooltip != null) return _tooltip;
@@ -509,18 +1012,181 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
-    /// 功能 3：舞台位移示意。
-    /// OnRenderRole 渲染完立绘后，若当前对话给该人物填了横移/纵移指令，
-    /// 就把立绘从槽位基准位置挪到移动终点（偏移 × 0.7 舞台缩放比）。
-    /// 无移动指令时归零还原——立绘对象会被复用，必须每次重置。
+    /// <summary>
+    /// 路径或清场相关字段编辑完成后立即重算小舞台。原版这些处理函数只修改配置/
+    /// 背景图，不会调用 RefreshRoles；若不补这一层，累计状态要等重新选择 Talk 才刷新。
+    /// 动作输入框由 EvtActionHintInitPatch 自己的 onEndEdit 监听处理，避免重复刷新。
+    /// </summary>
+    [HarmonyPatch]
+    internal static class EvtStageGraphEditRefreshPatch
+    {
+        private static IEnumerable<MethodBase> TargetMethods()
+        {
+            string[] names =
+            {
+                "OnEndEditCurBg",
+                "OnEndEditCurId",
+                "OnEndEditNextId",
+                "OnEndEditCondTrue",
+                "OnEndEditCondFalse",
+                "OnEndEditTalk",
+            };
+            foreach (string name in names)
+            {
+                MethodInfo method = AccessTools.Method(typeof(ModEvtEditView), name);
+                if (method != null) yield return method;
+            }
+        }
+
+        private static void Postfix(ModEvtEditView __instance)
+        {
+            try
+            {
+                Traverse.Create(__instance).Method("RefreshRoles").GetValue();
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError($"[EvtStageGraphRefresh] {e}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 功能 3：舞台累计位移与表情示意。
+    /// 每次 RefreshRoles 前由 TalkPreviewStateResolver 沿当前前驱链生成 after-current
+    /// 快照；OnRenderRole 渲染完立绘后，把该人物整个出场生命周期累计的
+    /// 3004/3008 偏移应用到槽位基准位置（偏移 × 0.7 舞台缩放比），并显示
+    /// 3000 的当前表情/姿势。人物退场重进、换背景清场、换方位/层级时，
+    /// 解析器会按真实播放器语义处理状态边界。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "OnRenderRole", typeof(Cell_ModEvtRoleItemUI))]
     internal static class EvtStageOffsetPatch
     {
-        /// 编辑器舞台相对真实对话画面的缩放比（间距 300→210px、立绘 scale 0.7，已核实）。
+        /// <summary>编辑器舞台相对真实对话画面的缩放比（间距 300→210px、立绘 scale 0.7，已核实）。</summary>
         private const float StageScale = 0.7f;
 
-        /// 各立绘对象的基准位置（key = GameObject.GetInstanceID）。
-        private static readonly Dictionary<int, Vector2> BasePos = new Dictionary<int, Vector2>();
+        private sealed class StagePreviewCache
+        {
+            public TalkCfg CurrentTalk;
+            public TalkPreviewSnapshot Snapshot;
+            public bool SnapshotPrepared;
+            public readonly Dictionary<int, Vector2> BasePositions = new();
+            public int LastAmbiguousWarningTalkId = int.MinValue;
+            public int LastCycleWarningTalkId = int.MinValue;
+            public int LastDuplicateWarningTalkId = int.MinValue;
+            public int LastBackgroundContextWarningTalkId = int.MinValue;
+        }
+
+        // 缓存跟随 ModEvtEditView 生命周期释放，避免旧版静态 InstanceID 字典在
+        // 视图销毁/Unity 重用 ID 后命中陈旧基准位置。
+        private static readonly ConditionalWeakTable<ModEvtEditView, StagePreviewCache> Caches = new();
+
+        internal static TalkPreviewSnapshot PrepareSnapshot(ModEvtEditView view, TalkCfg current)
+        {
+            if (view == null) return null;
+            StagePreviewCache cache = Caches.GetValue(view, _ => new StagePreviewCache());
+            cache.CurrentTalk = current;
+            cache.Snapshot = null;
+            cache.SnapshotPrepared = true;
+            if (current == null) return null;
+
+            try
+            {
+                var t = Traverse.Create(view);
+                var talks = t.Field("talkCfgs").GetValue<List<TalkCfg>>();
+                var options = t.Field("optionCfgs").GetValue<Dictionary<int, OptionCfg>>();
+                var persons = t.Field("personCfgs").GetValue<Dictionary<int, PersonCfg>>();
+                var customBgs = t.Field("customBgCfgs").GetValue<Dictionary<int, BgCfg>>();
+                var validPersonIds = persons != null
+                    ? new HashSet<int>(persons.Keys)
+                    : null;
+                var allBgs = new Dictionary<int, BgCfg>();
+                if (customBgs != null)
+                {
+                    foreach (KeyValuePair<int, BgCfg> bg in customBgs)
+                        allBgs[bg.Key] = bg.Value;
+                }
+                if (Cfg.BgCfgMap != null)
+                {
+                    foreach (KeyValuePair<int, BgCfg> bg in Cfg.BgCfgMap)
+                        if (!allBgs.ContainsKey(bg.Key)) allBgs.Add(bg.Key, bg.Value);
+                }
+                var validBgIds = new HashSet<int>(allBgs.Keys);
+
+                cache.Snapshot = TalkPreviewStateResolver.Resolve(
+                    talks, options, current, validBgIds, validPersonIds,
+                    TalkPreviewPlaybackMode.Game, null, allBgs);
+
+                if (cache.Snapshot.DuplicateTalkId)
+                {
+                    if (cache.LastDuplicateWarningTalkId != current.id)
+                    {
+                        cache.LastDuplicateWarningTalkId = current.id;
+                        Plugin.Log.LogWarning(
+                            $"[EvtStageOffset] 对话列表存在重复 ID（当前{current.id}）；" +
+                            "无法唯一还原历史状态，小舞台将回退当前句显示。");
+                    }
+                    cache.Snapshot = null;
+                    return null;
+                }
+
+                if (cache.Snapshot.BackgroundContextDependent)
+                {
+                    if (cache.LastBackgroundContextWarningTalkId != current.id)
+                    {
+                        cache.LastBackgroundContextWarningTalkId = current.id;
+                        Plugin.Log.LogWarning(
+                            $"[EvtStageOffset] 对话{current.id}在首个有效背景前已有 bg=0 人物；" +
+                            "实际清场取决于事件入口背景，小舞台将使用安全回退。");
+                    }
+                    cache.Snapshot = null;
+                    return null;
+                }
+
+                if (cache.Snapshot.AmbiguousPredecessor
+                    && cache.LastAmbiguousWarningTalkId != current.id)
+                {
+                    cache.LastAmbiguousWarningTalkId = current.id;
+                    Plugin.Log.LogWarning(
+                        $"[EvtStageOffset] 对话{current.id}存在多个前驱；" +
+                        "小舞台按事件编辑器相同的首个前驱显示累计目标状态。");
+                }
+                if (cache.Snapshot.CycleDetected
+                    && cache.LastCycleWarningTalkId != current.id)
+                {
+                    cache.LastCycleWarningTalkId = current.id;
+                    Plugin.Log.LogWarning(
+                        $"[EvtStageOffset] 对话{current.id}的前驱链存在循环；" +
+                        "无法定义唯一历史状态，小舞台将回退当前句显示。");
+                }
+                if (cache.Snapshot.CycleDetected)
+                {
+                    cache.Snapshot = null;
+                    return null;
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError($"[EvtStageOffset.Prepare] {e}");
+            }
+            return cache.Snapshot;
+        }
+
+        /// <summary>
+        /// 读取本轮 RefreshRoles 已计算的结果；null 也会缓存，避免不可靠剧情图在
+        /// 9 个人物槽渲染时重复回溯。需要响应编辑内容变化时由 RefreshRoles 显式
+        /// 调 PrepareSnapshot 重新计算。
+        /// </summary>
+        internal static TalkPreviewSnapshot GetSnapshot(
+            ModEvtEditView view,
+            TalkCfg current)
+        {
+            if (view == null) return null;
+            StagePreviewCache cache = Caches.GetValue(view, _ => new StagePreviewCache());
+            if (!ReferenceEquals(cache.CurrentTalk, current) || !cache.SnapshotPrepared)
+                return PrepareSnapshot(view, current);
+            return cache.Snapshot;
+        }
 
         private static void Postfix(ModEvtEditView __instance, Cell_ModEvtRoleItemUI _cell)
         {
@@ -529,20 +1195,34 @@ namespace StudentAgeEditorPlus.Patches
                 var keyObj = _cell.GetKeyObj<Cell_NewTalkRoleItemUI>("role");
                 if (keyObj == null || keyObj.transform == null) return;
 
-                // 首次见到该立绘对象时记下基准位置（创建后位置固定，可安全缓存）
+                StagePreviewCache cache = Caches.GetValue(__instance, _ => new StagePreviewCache());
+                var curSelect = Traverse.Create(__instance).Field("curSelect").GetValue<TalkCfg>();
+                GetSnapshot(__instance, curSelect);
+
+                // 首次见到该视图中的立绘对象时记下槽位基准位置。
                 int key = keyObj.gameObject.GetInstanceID();
-                if (!BasePos.TryGetValue(key, out var basePos))
+                if (!cache.BasePositions.TryGetValue(key, out var basePos))
                 {
                     basePos = keyObj.transform.anchoredPosition;
-                    BasePos[key] = basePos;
+                    cache.BasePositions[key] = basePos;
                 }
 
                 var offset = Vector2.zero;
-                if (_cell.data != null)
+                TalkPreviewRoleState roleState = null;
+                int personId = -1;
+                if (_cell.data != null && curSelect != null)
                 {
-                    var curSelect = Traverse.Create(__instance).Field("curSelect").GetValue<TalkCfg>();
-                    if (curSelect != null)
-                        offset = TalkActionTranslator.GetTalkOffset(curSelect, (int)_cell.data) * StageScale;
+                    personId = (int)_cell.data;
+                    if (cache.Snapshot?.AfterCurrent != null
+                        && cache.Snapshot.AfterCurrent.TryGetValue(personId, out roleState))
+                    {
+                        offset = new Vector2(roleState.OffsetX, roleState.OffsetY) * StageScale;
+                    }
+                    else
+                    {
+                        // 异常/残缺图的兼容回退：至少保留旧版“显示当前句偏移”的能力。
+                        offset = TalkActionTranslator.GetTalkOffset(curSelect, personId) * StageScale;
+                    }
                 }
 
                 keyObj.transform.anchoredPosition = basePos + offset;
@@ -552,8 +1232,105 @@ namespace StudentAgeEditorPlus.Patches
                 Plugin.Log.LogError($"[EvtStageOffset] {e}");
             }
         }
+
+        internal static TalkPreviewRoleState GetAfterRoleState(
+            ModEvtEditView view,
+            int personId)
+        {
+            if (view == null || personId < 0) return null;
+            StagePreviewCache cache = Caches.GetValue(view, _ => new StagePreviewCache());
+            var current = Traverse.Create(view).Field("curSelect").GetValue<TalkCfg>();
+            GetSnapshot(view, current);
+            return cache.Snapshot?.AfterCurrent != null
+                && cache.Snapshot.AfterCurrent.TryGetValue(personId, out TalkPreviewRoleState state)
+                    ? state
+                    : null;
+        }
     }
 
+    /// <summary>
+    /// 原版 OnRenderRole 永远传 exp=-1，且图片型人物只能查全局 ModFaceCfg。
+    /// Prefix 用一次最终渲染替代原方法，仅增加累计 3000 表情和当前 Mod 表情表；
+    /// 服装、高亮、发型和朝向仍保持原小舞台语义，避免把并发 Tween 或运行时
+    /// useCloth/isIcon 生命周期的近似状态扩散到静态编辑器。
+    /// </summary>
+    [HarmonyPatch(typeof(ModEvtEditView), "OnRenderRole", typeof(Cell_ModEvtRoleItemUI))]
+    internal static class EvtStageRoleVisualPatch
+    {
+        private static bool Prefix(ModEvtEditView __instance, Cell_ModEvtRoleItemUI _cell)
+        {
+            try
+            {
+                var roleCell = _cell.GetKeyObj<Cell_NewTalkRoleItemUI>("role");
+                if (roleCell == null) return true;
+                roleCell.gameObject.SetActive(_cell.data != null);
+                if (_cell.data == null) return false;
+
+                int personId = (int)_cell.data;
+                roleCell.SetData(personId);
+                roleCell.img_bubble_face.gameObject.SetActive(false);
+                // 同一槽位快速切换 Talk/表情时也可能有多个外部图片请求在途；
+                // 注册代次保护，避免较早请求晚到后覆盖当前表情。
+                PreviewSpriteRequestGuard.Register(roleCell.icon_role);
+
+                var t = Traverse.Create(__instance);
+                var current = t.Field("curSelect").GetValue<TalkCfg>();
+                TalkPreviewRoleState state =
+                    EvtStageOffsetPatch.GetAfterRoleState(__instance, personId);
+
+                // ModFaceCfg 的键同时包含服装编号；若表情来自前文而服装也已
+                // 在前文切换，必须用同一快照中的累计服装才能找到正确表情图。
+                int cloth = state != null && state.Cloth >= 0 ? state.Cloth : 0;
+                // 原版静态小舞台对 L2D 传 -1（模型默认表情）。只有状态机
+                // 确认执行过 3000 时才改成具体编号；图片分支仍会把 -1 归为
+                // 默认脸 0，与 TalkRoleItem.SetData 的原行为一致。
+                int pose = state != null && state.PoseSet ? state.Pose : -1;
+                bool foundCurrentCloth = state != null && state.Cloth >= 0;
+                if (current?.roles != null)
+                {
+                    foreach (List<float> action in current.roles)
+                    {
+                        if (action == null || action.Count < 2
+                            || (int)action[0] != personId) continue;
+                        int code = (int)action[1];
+                        // 原小舞台只取当前句第一条 3006；保持兼容。
+                        if (!foundCurrentCloth && code == 3006 && action.Count > 2)
+                        {
+                            cloth = (int)action[2];
+                            foundCurrentCloth = true;
+                        }
+                        if (state == null && code == 3000 && action.Count > 2)
+                            pose = (int)action[2];
+                    }
+                }
+
+                int colorId = 0;
+                bool highlighted = current != null
+                    && ((current.roleIds != null && current.roleIds.Contains(personId))
+                        || (current.highlights != null && current.highlights.Contains(personId)));
+                if (!highlighted) colorId = 6;
+
+                var persons = t.Field("personCfgs").GetValue<Dictionary<int, PersonCfg>>();
+                if (persons != null && persons.TryGetValue(personId, out PersonCfg person))
+                {
+                    int order = t.Field("order").GetValue<int>();
+                    int gradeState = t.Field("gradeState").GetValue<int>();
+                    var gender = t.Field("gender").GetValue<GenderDefine>();
+                    PreviewRoleRenderer.Render(
+                        person, roleCell, order, colorId, 1f, cloth, pose, false,
+                        0, gradeState, gender, EvtPreviewConfigLoader.GetFaces(__instance));
+                }
+                return false;
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError($"[EvtStageRoleVisual] {e}");
+                return true; // 任意异常回退原版 OnRenderRole。
+            }
+        }
+    }
+
+    /// <summary>
     /// 功能 4："预览本句"按钮。
     /// 原版预览入口在外层事件编辑页，且永远从事件第一句开始播
     ///（PreviewTalkView.OnOpen 取 talkId[0]），调中间某句的动画极其低效。
@@ -565,12 +1342,15 @@ namespace StudentAgeEditorPlus.Patches
     /// 数据来源（反编译核实）：
     ///   - talkCfgs/optionCfgs：编辑器内存里本事件的最新数据；
     ///   - personCfgs/audioCfgs：编辑器加载时已合并原版配置，直接传；
-    ///   - customBgCfgs/customCGCfgs：仅含 mod 自定义项，需与原版合并后传
-    ///    （PreviewTalkView 收到非空表后不再回退原版表）；
+    ///   - customBgCfgs/customCGCfgs：仅含 mod 自定义项，需与原版合并后传；
+    ///   - ModFaceCfg/ItemCfg/BookCfg：从当前 Mod 目录加载并与全局表合并；
     ///   - audioCfgs 是懒加载（LoadAudioCfg），传之前先确保已加载。
     ///
-    /// 已知限制（游戏机制决定）：从中间某句开播，更早对话里进场的人物
-    /// 不会出现在画面里。首次使用时 Toast 提示一次。
+    /// 历史动作不会复制进当前 roles 列表，而是由 TalkPreviewStateResolver 计算
+    /// BeforeCurrent 快照，在首次 ShowCurTxt 前直接恢复 PreviewTalkView 的内部状态。
+    /// 当前句及后续仍使用原始 actions/screenEffect/audio、原顺序与原 delay。
+    /// 多前驱或循环无法唯一判断上下文时直接阻止本句预览，不猜测分支。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "InitUI")]
     internal static class EvtTalkPreviewPatch
     {
@@ -635,7 +1415,7 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// 选中状态变化时联动按钮显隐（与原版 btn_delete 的显隐逻辑保持一致）。
+        /// <summary>选中状态变化时联动按钮显隐（与原版 btn_delete 的显隐逻辑保持一致）。</summary>
         internal static void SetVisible(bool visible)
         {
             if (_previewBtn == null) return;
@@ -652,21 +1432,52 @@ namespace StudentAgeEditorPlus.Patches
 
         private static void OpenPreview(ModEvtEditView view)
         {
+            TalkCfg current = null;
             try
             {
-                var t = Traverse.Create(view);
-                var curSelect = t.Field("curSelect").GetValue<TalkCfg>();
-                if (curSelect == null)
+                current = Traverse.Create(view)
+                    .Field("curSelect").GetValue<TalkCfg>();
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError($"[EvtTalkPreview.Current] {e}");
+            }
+            TryOpenPreview(view, current, null, null);
+        }
+
+        /// <summary>
+        /// 统一的“预览本句”入口。talkSource/optionSource 为空时读取原编辑器
+        /// 内存；剧情图编辑模式则传入深拷贝草稿，使尚未保存的热修改也能预览。
+        /// 返回 true 仅表示已把 PreviewTalkView 打开请求交给 UIMgr。
+        /// </summary>
+        internal static bool TryOpenPreview(
+            ModEvtEditView view,
+            TalkCfg requestedTalk,
+            IEnumerable<TalkCfg> talkSource,
+            IDictionary<int, OptionCfg> optionSource)
+        {
+            try
+            {
+                if (view == null)
                 {
-                    ToastHelper.Toast("请先在左侧选择一条对话");
-                    return;
+                    ToastHelper.Toast("事件编辑器已关闭，无法预览本句");
+                    return false;
                 }
 
-                var talkList = t.Field("talkCfgs").GetValue<List<TalkCfg>>();
-                if (talkList == null || talkList.Count == 0) return;
+                var t = Traverse.Create(view);
+                List<TalkCfg> talkList = talkSource != null
+                    ? SnapshotTalkSource(talkSource)
+                    : t.Field("talkCfgs").GetValue<List<TalkCfg>>();
+                string validation = ValidatePreviewRequest(
+                    talkList, requestedTalk);
+                if (!string.IsNullOrEmpty(validation))
+                {
+                    ToastHelper.Toast(validation);
+                    return false;
+                }
 
-                // List → Dictionary（编辑中可能出现重复 id，后者覆盖前者，避免异常）。
-                // 每句都传"roles 列表浅拷贝"的副本：预览播放器每句播放前会对
+                // List → Dictionary。每句都传“roles 列表浅拷贝”的副本：
+                // 预览播放器每句播放前会对
                 // roles 列表【就地排序】（进场条目提前），直接传编辑器内存对象
                 // 会悄悄重排作者在动作指令框里看到的数字串顺序——数据侵入！
                 var talkMap = new Dictionary<int, TalkCfg>();
@@ -675,21 +1486,18 @@ namespace StudentAgeEditorPlus.Patches
                     if (talk != null) talkMap[talk.id] = ShallowCopyTalk(talk);
                 }
 
-                // 从中间一句开播的两个缺口（用户实测反馈：时而没背景、人物占位乱）：
-                //   ① 背景继承：mod 通常只在第一句/换场景句填 bg，其余 bg=0 表示
-                //      沿用上一句 → 从中间开播时播放器找不到背景；
-                //   ② 前文人物：更早对话里进场的人物没被播到，本句动作作用在
-                //      "不在场"的人身上，站位错乱。
-                // 修复：把起始句换成一个"补齐了上下文"的副本（复用编辑器自身的
-                // FindBgId/FindRoles 回溯逻辑），编辑器内存里的真实数据不动。
-                // 第二轮增强（用户确认需要）：不只补站位，还沿剧情链回溯还原
-                // 每个人物的服装/发型/姿势/朝向/剪影/缩放/累计位移。
-                // 回溯用的 optionCfgs 必须是编辑器原始字段（与 FindRoles 同源），
-                // 不能用下面合并过原版的 optionMap。
-                var optionCfgsRaw = t.Field("optionCfgs").GetValue<Dictionary<int, OptionCfg>>();
-                talkMap[curSelect.id] = BuildStartTalkWithContext(t, curSelect, talkList, optionCfgsRaw);
-
+                Dictionary<int, OptionCfg> optionCfgsRaw = optionSource != null
+                    ? SnapshotOptionSource(optionSource)
+                    : t.Field("optionCfgs")
+                        .GetValue<Dictionary<int, OptionCfg>>();
                 var optionMap = Merge(optionCfgsRaw, Cfg.OptionCfgMap);
+                if (HasReachableEmptyTalkCycle(
+                        talkMap, optionMap, requestedTalk.id))
+                {
+                    ToastHelper.Toast("当前对话后方存在空白对话循环，原预览器会同步递归直至崩溃；请先修正跳转关系");
+                    return false;
+                }
+
                 var personMap = t.Field("personCfgs").GetValue<Dictionary<int, PersonCfg>>(); // 已含原版
                 var bgMap = Merge(t.Field("customBgCfgs").GetValue<Dictionary<int, BgCfg>>(), Cfg.BgCfgMap);
                 var cgMap = Merge(t.Field("customCGCfgs").GetValue<Dictionary<int, CGCfg>>(), Cfg.CGCfgMap);
@@ -700,29 +1508,256 @@ namespace StudentAgeEditorPlus.Patches
 
                 int gradeState = t.Field("gradeState").GetValue<int>();
                 var gender = t.Field("gender").GetValue<GenderDefine>();
+                string modRoot = t.Field("modRoot").GetValue<string>();
 
-                // parms 结构与 ModPreviewTipsView.OnClickOK 一致（后 3 项 face/item/book
-                // 不传，PreviewTalkView 会自动回退原版配置表）；
-                // 起始句列表只放当前对话 → OnOpen 取 list[0] 即从这句开播
-                UIMgr.OpenView<PreviewTalkView>(UILayerType.None, null, new object[9]
+                // 必须与 ModPreviewTipsView.OnClickOK 一样传满 12 项。尤其第 10 项
+                // ModFaceCfg 决定图片型人物的 3000 自定义表情；若省略，只会回退
+                // 当前游戏已加载的全局表，看不到尚在编辑的 Mod 表情。item/book 也
+                // 显式传入：PreviewTalkView 原版 OnOpen 对这两项的空值判断误用了
+                // faceCfgMap，不能依赖它自动回退，否则相关屏幕效果可能拿到 null。
+                var faceMap = EvtPreviewConfigLoader.LoadFaces(modRoot);
+                var itemMap = EvtPreviewConfigLoader.LoadItems(modRoot);
+                var bookMap = EvtPreviewConfigLoader.LoadBooks(modRoot);
+                if (faceMap.Count == 0 && (itemMap.Count > 0 || bookMap.Count > 0))
                 {
-                    talkMap, optionMap, new List<int> { curSelect.id },
-                    gradeState, gender, personMap, bgMap, cgMap, audioMap
+                    // PreviewTalkView.OnOpen 原版把 item/book 的空值判断误写成
+                    // faceCfgMap.IsEmpty()：当游戏与当前 Mod 都没有表情表时，它会
+                    // 丢弃已经传入的 item/book。放入绝不可能与合法人物公式键冲突
+                    // 的内部哨兵，只修正该错误分支；表情查找不会命中它。
+                    faceMap[int.MinValue] = new ModFaceCfg { id = int.MinValue };
+                }
+
+                // 解析当前 Talk 执行前的完整播放器状态。它会在 ShowCurTxt 前直接
+                // 写入 PreviewTalkView 内部状态，绝不把历史动作与当前动作塞进同一
+                // Tween 时间轴；当前句原始动作/延迟随后照常执行。
+                var validBgIds = new HashSet<int>(bgMap.Keys);
+                var validPersonIds = personMap != null
+                    ? new HashSet<int>(personMap.Keys)
+                    : null;
+                TalkPreviewSnapshot startSnapshot = TalkPreviewStateResolver.Resolve(
+                    talkList, optionMap, requestedTalk, validBgIds, validPersonIds,
+                    TalkPreviewPlaybackMode.Preview, audioMap, bgMap);
+                if (!startSnapshot.Reliable)
+                {
+                    ToastHelper.Toast(
+                        "当前对话的前驱存在循环，无法唯一恢复执行前状态；请先修正跳转或使用完整剧情预览");
+                    return false;
+                }
+                if (startSnapshot.AmbiguousPredecessor)
+                {
+                    // 分支合流没有运行时选项记录，任意选择一个前驱都可能让人物/
+                    // CG 状态来自错误分支。宁可阻止，也不展示看似正常的错误预览。
+                    ToastHelper.Toast(
+                        "当前对话存在多个前驱，无法判断要恢复哪条分支；请从完整剧情预览进入该分支");
+                    return false;
+                }
+                var bootstrap = new TalkPreviewBootstrapContext
+                {
+                    StartTalkId = requestedTalk.id,
+                    Snapshot = startSnapshot,
+                };
+
+                // 前 12 项与原版一致；第 13 项只由 EditorPlus 的 OnOpen 补丁读取，
+                // 原 PreviewTalkView 不会索引它。
+                UIMgr.OpenView<PreviewTalkView>(UILayerType.None, null, new object[13]
+                {
+                    talkMap, optionMap, new List<int> { requestedTalk.id },
+                    gradeState, gender, personMap, bgMap, cgMap, audioMap,
+                    faceMap, itemMap, bookMap, bootstrap
                 });
 
                 if (!_limitHintShown)
                 {
                     _limitHintShown = true;
-                    ToastHelper.Toast("从当前对话开始预览，点击画面会继续往后播放，右键随时关闭；前文人物的服装、站位、朝向已自动还原");
+                    ToastHelper.Toast(
+                        "已从当前对话开始，并恢复所选前驱路径上的人物、背景、表情、CG/滤镜/手机与音乐状态");
                 }
+                return true;
             }
             catch (Exception e)
             {
                 Plugin.Log.LogError($"[EvtTalkPreview] {e}");
+                try { ToastHelper.Toast("预览本句打开失败；请查看 BepInEx 日志"); }
+                catch { }
+                return false;
             }
         }
 
-        /// 合并配置表：custom 优先，原版补缺（与游戏 mod 合并的"先到先得"语义一致）。
+        internal static string ValidatePreviewRequest(
+            List<TalkCfg> talks, TalkCfg requestedTalk)
+        {
+            if (requestedTalk == null) return "请先选择一条对话";
+            if (talks == null || talks.Count == 0)
+                return "当前事件没有可预览的对话";
+            bool found = false;
+            for (int i = 0; i < talks.Count; i++)
+            {
+                if (ReferenceEquals(talks[i], requestedTalk))
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                return "该剧情图节点已经失效；请刷新剧情图后重试";
+            if (string.IsNullOrWhiteSpace(requestedTalk.content))
+                return "当前对话内容为空，会被预览器直接跳过；请选择一条有正文的对话预览";
+            if (HasDuplicateTalkIds(talks))
+                return "对话列表存在重复编号（ID），预览器无法确定对应关系；请先修正编号，再预览本句";
+            return null;
+        }
+
+        private static List<TalkCfg> SnapshotTalkSource(
+            IEnumerable<TalkCfg> source)
+        {
+            var result = new List<TalkCfg>();
+            if (source != null)
+                foreach (TalkCfg talk in source) result.Add(talk);
+            return result;
+        }
+
+        private static Dictionary<int, OptionCfg> SnapshotOptionSource(
+            IDictionary<int, OptionCfg> source)
+        {
+            var result = new Dictionary<int, OptionCfg>();
+            if (source != null)
+                foreach (KeyValuePair<int, OptionCfg> pair in source)
+                    result[pair.Key] = pair.Value;
+            return result;
+        }
+
+        private static bool HasDuplicateTalkIds(List<TalkCfg> talks)
+        {
+            var ids = new HashSet<int>();
+            if (talks == null) return false;
+            foreach (TalkCfg talk in talks)
+            {
+                if (talk != null && !ids.Add(talk.id)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// PreviewTalkView 遇到空 content 会在 RefreshTalk 内同步 NextTalk；空节点
+        /// 形成环时不会等待点击而会直接栈溢出。只检查从起始句下一跳可达的“纯空
+        /// Talk 子图”；经过非空 Talk 后递归会停止，正常剧情循环不在此限制内。
+        /// </summary>
+        private static bool HasReachableEmptyTalkCycle(
+            Dictionary<int, TalkCfg> talks,
+            Dictionary<int, OptionCfg> options,
+            int startTalkId)
+        {
+            if (talks == null || !talks.ContainsKey(startTalkId)) return false;
+
+            // 先遍历完整可达图，不能在遇到下一条非空 Talk 时停止：玩家点击那句
+            // 后仍可能进入更深处的纯空环并触发同步递归栈溢出。
+            var reachable = new HashSet<int>();
+            var pending = new Stack<int>();
+            pending.Push(startTalkId);
+            while (pending.Count > 0)
+            {
+                int id = pending.Pop();
+                if (!reachable.Add(id) || !talks.TryGetValue(id, out TalkCfg talk)) continue;
+                foreach (int next in GetActualOutgoingTalkIds(talk, options))
+                    if (!reachable.Contains(next)) pending.Push(next);
+            }
+
+            var visiting = new HashSet<int>();
+            var finished = new HashSet<int>();
+            foreach (int id in reachable)
+            {
+                if (HasEmptyCycleFrom(
+                    id, talks, options, reachable, visiting, finished)) return true;
+            }
+            return false;
+        }
+
+        private static bool HasEmptyCycleFrom(
+            int talkId,
+            Dictionary<int, TalkCfg> talks,
+            Dictionary<int, OptionCfg> options,
+            HashSet<int> reachable,
+            HashSet<int> visiting,
+            HashSet<int> finished)
+        {
+            if (!reachable.Contains(talkId)
+                || !talks.TryGetValue(talkId, out TalkCfg talk)
+                || !string.IsNullOrWhiteSpace(talk.content)) return false;
+            if (visiting.Contains(talkId)) return true;
+            if (finished.Contains(talkId)) return false;
+
+            visiting.Add(talkId);
+            foreach (int next in GetSynchronousEmptyOutgoing(talk))
+            {
+                // 这里只走空正文 NextTalk 的同步边；带 check 的空 Talk 会先弹
+                // 分支确认框，不会在当前调用栈继续递归。
+                if (HasEmptyCycleFrom(
+                    next, talks, options, reachable, visiting, finished)) return true;
+            }
+            visiting.Remove(talkId);
+            finished.Add(talkId);
+            return false;
+        }
+
+        private static IEnumerable<int> GetActualOutgoingTalkIds(
+            TalkCfg talk,
+            Dictionary<int, OptionCfg> options)
+        {
+            if (talk == null) yield break;
+            var seen = new HashSet<int>();
+
+            // 5001 纸条优先于 option；纸条关闭后事件 6 会直接调用 NextTalk。
+            // 保守地把任一正 paperId 视为有效，宁可多检查也不能漏掉空环崩溃边。
+            bool hasPaper = HasPotentialPaper(talk);
+
+            // 非空、无纸条且有选项时，DoTextEnd 只展示选项，不走残留 nextTalk。
+            if (!string.IsNullOrWhiteSpace(talk.content) && !hasPaper
+                && talk.option != null && talk.option.Count > 0)
+            {
+                if (options == null) yield break;
+                foreach (int optionId in talk.option)
+                {
+                    if (!options.TryGetValue(optionId, out OptionCfg option)
+                        || option == null) continue;
+                    int first = option.GetNextTalk();
+                    int second = option.GetNextTalk2();
+                    if (first > 1 && seen.Add(first)) yield return first;
+                    if (second > 1 && seen.Add(second)) yield return second;
+                }
+                yield break;
+            }
+
+            int next = talk.GetNextTalk();
+            if (next > 0 && seen.Add(next)) yield return next;
+            if (talk.check != null && talk.check.Count > 0)
+            {
+                int next2 = talk.GetNextTalk2();
+                if (next2 > 0 && seen.Add(next2)) yield return next2;
+            }
+        }
+
+        private static bool HasPotentialPaper(TalkCfg talk)
+        {
+            if (talk?.roles == null) return false;
+            foreach (List<float> action in talk.roles)
+            {
+                if (action != null && action.Count > 2
+                    && (int)action[1] == 5001 && (int)action[2] > 0)
+                    return true;
+            }
+            return false;
+        }
+
+        private static IEnumerable<int> GetSynchronousEmptyOutgoing(TalkCfg talk)
+        {
+            if (talk == null || !string.IsNullOrWhiteSpace(talk.content)) yield break;
+            // NextTalk 遇 check 会显示确认框并返回，不形成同步递归边。
+            if (talk.check != null && talk.check.Count > 0) yield break;
+            int next = talk.GetNextTalk();
+            if (next > 0) yield return next;
+        }
+
+        /// <summary>合并配置表：custom 优先，原版补缺（与游戏 mod 合并的"先到先得"语义一致）。</summary>
         private static Dictionary<int, T> Merge<T>(Dictionary<int, T> custom, Dictionary<int, T> global)
         {
             var result = new Dictionary<int, T>();
@@ -740,120 +1775,11 @@ namespace StudentAgeEditorPlus.Patches
             return result;
         }
 
-        /// 生成起始句的"补齐上下文"副本：
-        ///   - bg<=0 时用编辑器的 FindBgId(talkId) 回溯继承背景；
-        ///   - 用编辑器的 FindRoles(talkId) 算出此刻在场的人物及方位，为
-        ///     "不是本句进场"的人合成放置指令 + 前文状态还原指令：
-        ///     服装(3006)/发型(3014)/姿势(3000)/剪影(3012)/朝向(3005/3007
-        ///     翻转次数奇偶)/放大(3003 次数)/累计位移(3004/3008 偏移和)。
-        ///     状态沿剧情链倒序回溯（WalkChainBackward + CollectRoleStates），
-        ///     遇到该人的进场/退场即停（更早的状态属于上一个出场周期）。
-        /// 仅修改传给预览器的副本；roles 列表为浅拷贝 + 前插，原有条目
-        /// 与编辑器共享引用但双方都只读，安全。
-        /// 已知残留：纵向累计位移以 0.4 秒快速滑动呈现（纵移指令无时长参数）；
-        /// 表情/跳跃/抖动等瞬时动画不回放（真实游戏里本就不跨句残留）。
-        private static TalkCfg BuildStartTalkWithContext(
-            Traverse t, TalkCfg cur, List<TalkCfg> talkList, Dictionary<int, OptionCfg> optionCfgs)
-        {
-            var copy = ShallowCopyTalk(cur);
 
-            // ① 背景继承
-            try
-            {
-                if (copy.bg <= 0)
-                {
-                    int inherited = t.Method("FindBgId", new[] { typeof(int) }).GetValue<int>(cur.id);
-                    if (inherited > 0) copy.bg = inherited;
-                }
-            }
-            catch (Exception e) { Plugin.Log.LogWarning($"[EvtTalkPreview] 背景回溯失败: {e.Message}"); }
-
-            // ② 前文在场人物补齐
-            try
-            {
-                var inScene = t.Method("FindRoles", new[] { typeof(int) })
-                    .GetValue<Dictionary<int, TalkAxis>>(cur.id);
-                if (inScene != null && inScene.Count > 0)
-                {
-                    // 本句自己进场的人物不合成（否则"先放置又淡入"动作重复）
-                    var entersThisTalk = new HashSet<int>();
-                    if (cur.roles != null)
-                    {
-                        foreach (var e in cur.roles)
-                        {
-                            if (e == null || e.Count < 2) continue;
-                            int code = (int)e[1];
-                            bool isEnter = code == 1001 || code == 1002 || code == 1003;
-                            if (Cfg.TalkAnimeCfgMap.TryGetValue(code, out var ac))
-                                isEnter = ac.type == 1; // 配置表为准（type 1 = 进场类）
-                            if (isEnter) entersThisTalk.Add((int)e[0]);
-                        }
-                    }
-
-                    // 需要还原状态的人物集合
-                    var restoreIds = new HashSet<int>();
-                    foreach (var kvp in inScene)
-                    {
-                        if (!entersThisTalk.Contains(kvp.Key)) restoreIds.Add(kvp.Key);
-                    }
-
-                    // 沿剧情链回溯累计每人的前文状态（失败则回退为"仅放置"）
-                    Dictionary<int, RoleChainState> states = null;
-                    if (restoreIds.Count > 0)
-                    {
-                        try
-                        {
-                            var chain = WalkChainBackward(talkList, optionCfgs, cur);
-                            states = CollectRoleStates(chain, restoreIds);
-                        }
-                        catch (Exception e)
-                        {
-                            Plugin.Log.LogWarning($"[EvtTalkPreview] 状态回溯失败，回退为仅补站位: {e.Message}");
-                        }
-                    }
-
-                    int insertAt = 0;
-                    void Prepend(List<float> entry) => copy.roles.Insert(insertAt++, entry);
-
-                    foreach (var kvp in inScene)
-                    {
-                        if (entersThisTalk.Contains(kvp.Key)) continue;
-                        int pid = kvp.Key;
-
-                        // 1) 放置到方位槽（瞬间站定）
-                        Prepend(new List<float> { pid, 1001f, 1f, (float)kvp.Value });
-
-                        if (states == null || !states.TryGetValue(pid, out var st)) continue;
-
-                        // 2) 持久外观状态（服装/发型/姿势/剪影）
-                        if (st.cloth >= 0) Prepend(new List<float> { pid, 3006f, st.cloth });
-                        if (st.hair >= 0) Prepend(new List<float> { pid, 3014f, st.hair });
-                        if (st.pose >= 0) Prepend(new List<float> { pid, 3000f, st.pose });
-                        if (st.shadow == 1) Prepend(new List<float> { pid, 3012f });
-
-                        // 3) 朝向：翻转是切换语义，奇数次 = 最终是翻转态（3007 瞬间翻转）
-                        if (st.flipCount % 2 == 1) Prepend(new List<float> { pid, 3007f });
-
-                        // 4) 放大：3003 每次固定 ×1.1（引擎语义），按次数重放
-                        for (int i = 0; i < st.scaleCount; i++)
-                            Prepend(new List<float> { pid, 3003f });
-
-                        // 5) 累计位移。横移带时长参数 → 0.011 秒近似瞬移；
-                        //    纵移无时长参数 → 引擎默认 0.4 秒快速滑动（已知残留）。
-                        //    顺序必须横移在前：两条 tween 的终点快照决定了
-                        //    此顺序下最终位置必然正确。
-                        if (st.sumX != 0f) Prepend(new List<float> { pid, 3004f, st.sumX, 0f, 0f, 0.011f });
-                        if (st.sumY != 0f) Prepend(new List<float> { pid, 3008f, st.sumY });
-                    }
-                }
-            }
-            catch (Exception e) { Plugin.Log.LogWarning($"[EvtTalkPreview] 人物回溯失败: {e.Message}"); }
-
-            return copy;
-        }
-
+        /// <summary>
         /// TalkCfg 浅拷贝：roles 用新列表（条目内层 List 共享引用——预览只读
         /// 条目内容，但会对 roles 列表本身就地排序，必须隔离），其余字段直传。
+        /// </summary>
         private static TalkCfg ShallowCopyTalk(TalkCfg src)
         {
             return new TalkCfg
@@ -873,7 +1799,7 @@ namespace StudentAgeEditorPlus.Patches
                 option = src.option,
                 replace = src.replace,
                 roleIds = src.roleIds,
-                roleName = src.roleName,
+                roleName = TalkRoleNameUtil.NormalizeOverride(src.roleName),
                 screenEffect = src.screenEffect,
                 showTxt = src.showTxt,
                 time = src.time,
@@ -884,155 +1810,11 @@ namespace StudentAgeEditorPlus.Patches
             };
         }
 
-        /// 某人物沿剧情链回溯累计出的前文状态。
-        private sealed class RoleChainState
-        {
-            /// 已遇到该人的进场/退场，停止累计（更早的状态属于上个出场周期）。
-            public bool closed;
-            public float sumX;
-            public float sumY;
-            public int cloth = -1;   // -1=未见（0 是合法的默认装编号）
-            public int hair = -1;
-            public int pose = -1;
-            public int flipCount;    // 3005/3007 出现次数，奇偶定朝向
-            public int scaleCount;   // 3003 出现次数（每次固定 ×1.1）
-            public int shadow = -1;  // -1=未见 1=剪影 0=正常
-        }
-
-        /// 沿剧情链从起始句往前走，返回按时间倒序的前驱对话序列（不含起始句）。
-        /// 前驱查找与停止条件完全复刻编辑器 FindRoles（反编译 L588-615）：
-        /// nextTalk/nextTalk2 反查 → 查不到再从选项反查；停止于环（visited）、
-        /// 无前驱、前驱 bg==-1、换背景边界（含原版"与起始句 bg 比较"的怪癖，
-        /// 保持与编辑器小舞台的在场判定一致）。
-        private static List<TalkCfg> WalkChainBackward(
-            List<TalkCfg> talks, Dictionary<int, OptionCfg> optionCfgs, TalkCfg start)
-        {
-            var result = new List<TalkCfg>();
-            if (talks == null || start == null || start.bg == -1) return result;
-
-            int lastBg = start.bg;
-            int curId = start.id;
-            var visited = new HashSet<int>();
-            while (true)
-            {
-                if (visited.Contains(curId)) return result;
-                visited.Add(curId);
-
-                int id = curId; // 闭包快照
-                var prev = talks.Find(cfg => cfg != null && cfg.id != id &&
-                    (ContainsSafe(cfg.nextTalk, id) || ContainsSafe(cfg.nextTalk2, id)));
-
-                if (prev == null && optionCfgs != null && optionCfgs.Count > 0)
-                {
-                    int optionId = 0;
-                    foreach (var o in optionCfgs)
-                    {
-                        if (o.Value != null &&
-                            (ContainsSafe(o.Value.talkId, id) || ContainsSafe(o.Value.talkId2, id)))
-                        {
-                            optionId = o.Key;
-                            break;
-                        }
-                    }
-                    if (optionId != 0)
-                    {
-                        prev = talks.Find(cfg => cfg != null && ContainsSafe(cfg.option, optionId));
-                    }
-                }
-
-                if (prev == null || prev.bg == -1) return result;
-                // 原版怪癖照抄：右侧比较的是起始句的 bg（而非上一格的 bg）
-                if (prev.bg > 0 && lastBg > 0 && lastBg != start.bg) return result;
-                lastBg = prev.bg;
-
-                result.Add(prev);
-                curId = prev.id;
-            }
-        }
-
-        /// 沿倒序链累计每个人物的前文状态。
-        /// 每句分两遍处理——这是刻意的：预览/游戏播放每句前会把该人物的
-        /// 进场条目【排序提前】到最先执行，因此同句内的状态/位移指令无论
-        /// 写在进场条目前还是后，实际都在进场之后生效。若按数据顺序倒序
-        /// 一遍走完，写在进场条目之前的状态指令会被 closed 误吞。
-        ///   第一遍（倒序）：非进场条目——状态"倒序首见即最新"（服装/发型/
-        ///   姿势/剪影），位移/翻转/放大累计；遇退场防御性关闭。
-        ///   第二遍：进场条目 → 关闭该人物（更早的状态属于上个出场周期）。
-        /// 全员 closed 后提前结束。
-        private static Dictionary<int, RoleChainState> CollectRoleStates(
-            List<TalkCfg> chain, HashSet<int> personIds)
-        {
-            var states = new Dictionary<int, RoleChainState>();
-            foreach (var id in personIds) states[id] = new RoleChainState();
-            int openCount = states.Count;
-
-            foreach (var talk in chain)
-            {
-                if (openCount <= 0) break;
-                if (talk?.roles == null) continue;
-
-                // 第一遍（倒序）：非进场条目
-                for (int i = talk.roles.Count - 1; i >= 0; i--)
-                {
-                    var e = talk.roles[i];
-                    if (e == null || e.Count < 2) continue;
-                    if (!states.TryGetValue((int)e[0], out var st) || st.closed) continue;
-
-                    int type = GetAnimeType((int)e[1]);
-                    if (type == 1) continue; // 进场留给第二遍
-                    if (type == 2)
-                    {
-                        // 防御：该人物在场却先遇到退场（理论上不会发生，
-                        // 因为退场后必有再进场才可能在场，而进场会先关闭）
-                        st.closed = true;
-                        openCount--;
-                        continue;
-                    }
-
-                    switch ((int)e[1])
-                    {
-                        case 3004: if (e.Count > 2) st.sumX += e[2]; break;
-                        case 3008: if (e.Count > 2) st.sumY += e[2]; break;
-                        case 3006: if (st.cloth < 0 && e.Count > 2) st.cloth = (int)e[2]; break;
-                        case 3014: if (st.hair < 0 && e.Count > 2) st.hair = (int)e[2]; break;
-                        case 3000: if (st.pose < 0 && e.Count > 2) st.pose = (int)e[2]; break;
-                        case 3005:
-                        case 3007: st.flipCount++; break;
-                        // 参数为 0 的 3003 是"×0"的异常用法，不计入
-                        case 3003: if (e.Count <= 2 || e[2] != 0f) st.scaleCount++; break;
-                        case 3012: if (st.shadow < 0) st.shadow = 1; break;
-                        case 3013: if (st.shadow < 0) st.shadow = 0; break;
-                    }
-                }
-
-                // 第二遍：进场条目 → 关闭
-                foreach (var e in talk.roles)
-                {
-                    if (e == null || e.Count < 2) continue;
-                    if (!states.TryGetValue((int)e[0], out var st) || st.closed) continue;
-                    if (GetAnimeType((int)e[1]) == 1)
-                    {
-                        st.closed = true;
-                        openCount--;
-                    }
-                }
-            }
-            return states;
-        }
-
-        /// 动作类型：1=进场 2=退场，其余 0/3/4/5；配置表优先，回退硬编码。
-        private static int GetAnimeType(int code)
-        {
-            if (Cfg.TalkAnimeCfgMap.TryGetValue(code, out var ac)) return ac.type;
-            if (code >= 1001 && code <= 1003) return 1;
-            if (code == 2001 || code == 2002) return 2;
-            return 0;
-        }
-
-        private static bool ContainsSafe(List<int> list, int v) => list != null && list.Contains(v);
     }
 
+    /// <summary>
     /// 选中对话变化时：隐藏悬浮提示框（防旧内容残留）+ 联动"预览本句"按钮显隐。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "Select", typeof(TalkCfg))]
     internal static class EvtTalkPreviewSelectPatch
     {

@@ -11,6 +11,7 @@ using View.Mod;
 
 namespace StudentAgeEditorPlus.Patches
 {
+    /// <summary>
     /// 修复：事件对话编辑器的人物预览最多只显示 3 个人物，实际 UI 最多能放 9 个。
     ///
     /// 成因：ModEvtEditUI 预制体为左/中/右三个方位各定义了 3 个槽位
@@ -50,6 +51,7 @@ namespace StudentAgeEditorPlus.Patches
     ///   - 补丁 C（OnCreateRole Prefix）：替换 + 按钮逻辑，允许同方位多人物；
     ///     记录点击的槽位供补丁 B 精确落位；替换从上文对话入场的人物时，
     ///     补退场动作实现真正的"换人"而非"多加一个人"。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "InitUI")]
     internal static class EvtRoleDisplayInitPatch
     {
@@ -134,8 +136,10 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
+        /// <summary>
         /// 把 _1/_2 槽位 btn_add 的 RectTransform 布局（含 "+" 图标、点击区域子节点）
         /// 对齐到 _0 槽位的模板样式。
+        /// </summary>
         private static void AlignAddButton(UIButton dst, UIButton src)
         {
             if (dst == null || src == null) return;
@@ -165,9 +169,11 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
+        /// <summary>
         /// 把槽位 btn_add 的点击判定区收窄到 "+" 图标附近（130×130）。
         /// 相邻槽位中心距最小 140px，收窄后互不重叠；
         /// 人物立绘（icon_role/l2d_role）不参与点击判定，不受影响。
+        /// </summary>
         private static void ShrinkClickArea(UIButton btn)
         {
             if (btn == null || btn.transform == null) return;
@@ -198,15 +204,155 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
+    /// <summary>
+    /// 小舞台与人物选择框共用的安全名单解析。正常剧情图使用播放器状态快照；
+    /// 重复 ID/循环等不可靠图才使用带完整长度和循环保护的本地回退，绝不再调用
+    /// 原版会对合法短指令 [id,1001] 直接读取 role[3] 的 FindRoles。
+    /// </summary>
+    internal static class EvtRoleRosterResolver
+    {
+        internal static Dictionary<int, TalkAxis> Resolve(
+            ModEvtEditView view,
+            TalkCfg current,
+            TalkPreviewSnapshot snapshot = null)
+        {
+            if (view == null || current == null) return new Dictionary<int, TalkAxis>();
+            if (snapshot == null)
+                snapshot = EvtStageOffsetPatch.GetSnapshot(view, current);
+
+            if (snapshot != null && snapshot.Reliable && snapshot.AfterCurrent != null)
+            {
+                var result = new Dictionary<int, TalkAxis>();
+                foreach (KeyValuePair<int, TalkPreviewRoleState> entry in snapshot.AfterCurrent)
+                {
+                    TalkAxis axis = SceneAxis(entry.Value.Axis)
+                        ? entry.Value.Axis
+                        : entry.Value.TargetAxis;
+                    if (SceneAxis(axis)) result[entry.Key] = axis;
+                }
+                return result;
+            }
+
+            return ResolveFallback(view, current);
+        }
+
+        private static Dictionary<int, TalkAxis> ResolveFallback(
+            ModEvtEditView view,
+            TalkCfg current)
+        {
+            var result = new Dictionary<int, TalkAxis>();
+            try
+            {
+                var t = Traverse.Create(view);
+                var talks = t.Field("talkCfgs").GetValue<List<TalkCfg>>();
+                var options = t.Field("optionCfgs").GetValue<Dictionary<int, OptionCfg>>();
+                if (talks == null) return result;
+
+                var fixedPersons = new HashSet<int>();
+                var visited = new HashSet<int>();
+                TalkCfg cursor = talks.Find(cfg => cfg != null && cfg.id == current.id) ?? current;
+                int lastPositiveBg = 0;
+                while (cursor != null && visited.Add(cursor.id))
+                {
+                    // 空正文在实际播放器中整句跳过。
+                    if (!string.IsNullOrWhiteSpace(cursor.content))
+                    {
+                        if (cursor.bg == -1) break;
+                        if (cursor.bg > 0 && lastPositiveBg > 0
+                            && cursor.bg != lastPositiveBg) break;
+                        if (cursor.bg > 0) lastPositiveBg = cursor.bg;
+                        ProcessTalkSafe(cursor, fixedPersons, result);
+                    }
+                    cursor = FindPreviousSafe(talks, options, cursor.id);
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[EvtRoleRoster] 安全回退解析失败: {e.Message}");
+            }
+            return result;
+        }
+
+        private static void ProcessTalkSafe(
+            TalkCfg talk,
+            HashSet<int> fixedPersons,
+            Dictionary<int, TalkAxis> result)
+        {
+            if (talk?.roles == null) return;
+            foreach (List<float> action in talk.roles)
+            {
+                if (action == null || action.Count < 2) continue;
+                int personId = (int)action[0];
+                if (personId < 0 || fixedPersons.Contains(personId)) continue;
+                int code = (int)action[1];
+                int type = 0;
+                if (Cfg.TalkAnimeCfgMap != null
+                    && Cfg.TalkAnimeCfgMap.TryGetValue(code, out TalkAnimeCfg anime))
+                    type = anime.type;
+                else if (code >= 1001 && code <= 1003) type = 1;
+                else if (code == 2001 || code == 2002) type = 2;
+
+                if (type == 1)
+                {
+                    if (action.Count > 3)
+                    {
+                        TalkAxis axis = (TalkAxis)(int)action[3];
+                        if (SceneAxis(axis)) result[personId] = axis;
+                    }
+                    fixedPersons.Add(personId);
+                }
+                else if (type == 2)
+                {
+                    result.Remove(personId);
+                    fixedPersons.Add(personId);
+                }
+            }
+        }
+
+        private static TalkCfg FindPreviousSafe(
+            List<TalkCfg> talks,
+            Dictionary<int, OptionCfg> options,
+            int targetId)
+        {
+            TalkCfg direct = talks.Find(talk => talk != null && talk.id != targetId
+                && ((talk.nextTalk != null && talk.nextTalk.Contains(targetId))
+                    || (talk.nextTalk2 != null && talk.nextTalk2.Contains(targetId))));
+            if (direct != null) return direct;
+            if (options == null) return null;
+
+            int optionId = 0;
+            foreach (KeyValuePair<int, OptionCfg> entry in options)
+            {
+                OptionCfg option = entry.Value;
+                if (option != null
+                    && ((option.talkId != null && option.talkId.Contains(targetId))
+                        || (option.talkId2 != null && option.talkId2.Contains(targetId))))
+                {
+                    optionId = entry.Key;
+                    break;
+                }
+            }
+            return optionId == 0 ? null : talks.Find(talk => talk?.option != null
+                && talk.option.Contains(optionId));
+        }
+
+        private static bool SceneAxis(TalkAxis axis)
+        {
+            return axis == TalkAxis.Left || axis == TalkAxis.Mid || axis == TalkAxis.Right;
+        }
+    }
+
     [HarmonyPatch(typeof(ModEvtEditView), "RefreshRoles")]
     internal static class EvtRoleDisplayRefreshPatch
     {
+        /// <summary>
         /// Prefix 替换原方法。分配优先级：
         ///   0) 刚点击 + 添加/替换的人物 → 落在被点击的那个槽位；
         ///   1) 已在场人物 → 保持上一次所在槽位（增删他人时不跳位）；
         ///   2) 其余人物 → 按"居中 → 左 → 右"填入空槽（第 1 人与原版编辑器
         ///      的显示位置一致，兼容旧 mod 的单人对话预览）。
         /// 最后所有槽位常显（空槽显示 + 按钮）。
+        /// </summary>
         private static bool Prefix(ModEvtEditView __instance)
         {
             try
@@ -218,17 +364,27 @@ namespace StudentAgeEditorPlus.Patches
                 if (roleCells == null) return false;
 
                 var curSelect = t.Field("curSelect").GetValue<TalkCfg>();
-                if (curSelect == null) return false;
+                if (curSelect == null)
+                {
+                    EvtStageOffsetPatch.PrepareSnapshot(__instance, null);
+                    return false;
+                }
+
+                // 在 SetData 触发 OnRenderRole 前一次性计算整条前驱链快照；
+                // 9 个 cell 只查表，不各自重复遍历剧情图。
+                TalkPreviewSnapshot previewSnapshot =
+                    EvtStageOffsetPatch.PrepareSnapshot(__instance, curSelect);
 
                 // 取出"刚通过 + 按钮操作的槽位"（一次性，用完即清）
                 var pendingCell = EvtRoleDisplayCreatePatch.PendingCell;
                 int pendingPersonId = EvtRoleDisplayCreatePatch.PendingPersonId;
                 EvtRoleDisplayCreatePatch.ClearPending();
 
-                // ── 收集当前在场人物（用 FindRoles 确定谁在场） ──
-                var foundRoles = t.Method("FindRoles", new[] { typeof(int) })
-                    .GetValue(curSelect.id) as Dictionary<int, TalkAxis>;
-                // foundRoles: key=人物ID, value=方位。可能为 null。
+                // ── 收集播放器语义下的在场人物 ──
+                // 与添加人物对话框共用同一 helper；短 1001、隐式建角、空 Talk、
+                // 同句进退场都不会再落回原版不安全的 FindRoles。
+                Dictionary<int, TalkAxis> foundRoles =
+                    EvtRoleRosterResolver.Resolve(__instance, curSelect, previewSnapshot);
 
                 // ── 阶段 1：记录每个槽位当前的人物，然后清空 ──
                 // 记录旧位置用于保持稳定性：同一个人物应尽量留在原来的槽位
@@ -268,10 +424,20 @@ namespace StudentAgeEditorPlus.Patches
                                 axisPersons.Add(roleKvp.Key);
                         }
 
+                        // 首次打开/直接跳到后文 Talk 时没有 oldSlots 可沿用，必须按
+                        // 播放器 posRoles 的槽号排列。尤其 A/B 入场后 A 退场、C 再
+                        // 入场时，真实顺序是 C(slot0)、B(slot1)，不能按 Dictionary
+                        // 枚举误排成 B、C。slot 相同/尚未定位时再按建角顺序兜底。
+                        if (previewSnapshot?.AfterCurrent != null)
+                        {
+                            axisPersons.Sort((a, b) => ComparePreviewOrder(
+                                a, b, previewSnapshot));
+                        }
+
                         var placed = new HashSet<int>();
 
                         // 第 0 轮：刚点击 + 添加/替换的人物，精确落在被点击的槽位
-                        if (pendingCell != null && pendingPersonId > 0 &&
+                        if (pendingCell != null && pendingPersonId >= 0 &&
                             axisPersons.Contains(pendingPersonId))
                         {
                             int slotIdx = list.IndexOf(pendingCell);
@@ -343,12 +509,41 @@ namespace StudentAgeEditorPlus.Patches
             catch (Exception e)
             {
                 Plugin.Log.LogError($"[EvtRoleDisplayRefresh] {e}");
-                return true; // 出错时回退到原方法
+                // 原方法的 FindRoles 对合法短 1001 会再次越界，异常时也不能回退。
+                return false;
             }
+        }
+
+        private static int ComparePreviewOrder(
+            int personA,
+            int personB,
+            TalkPreviewSnapshot snapshot)
+        {
+            snapshot.AfterCurrent.TryGetValue(personA, out TalkPreviewRoleState stateA);
+            snapshot.AfterCurrent.TryGetValue(personB, out TalkPreviewRoleState stateB);
+            int slotA = stateA?.SlotIndex ?? -1;
+            int slotB = stateB?.SlotIndex ?? -1;
+            if (slotA >= 0 || slotB >= 0)
+            {
+                if (slotA < 0) return 1;
+                if (slotB < 0) return -1;
+                int bySlot = slotA.CompareTo(slotB);
+                if (bySlot != 0) return bySlot;
+            }
+
+            int orderA = snapshot.AfterRoleOrder != null
+                ? snapshot.AfterRoleOrder.IndexOf(personA) : -1;
+            int orderB = snapshot.AfterRoleOrder != null
+                ? snapshot.AfterRoleOrder.IndexOf(personB) : -1;
+            if (orderA < 0) orderA = int.MaxValue;
+            if (orderB < 0) orderB = int.MaxValue;
+            int byOrder = orderA.CompareTo(orderB);
+            return byOrder != 0 ? byOrder : personA.CompareTo(personB);
         }
     }
 
 
+    /// <summary>
     /// 补丁 C：OnCreateRole Prefix — 替换添加逻辑，允许同方位多人物。
     ///
     /// 原版对同一方位的 1002（入场）动作做替换而非新增，
@@ -361,17 +556,18 @@ namespace StudentAgeEditorPlus.Patches
     ///         新人多加一个"）。
     /// 同时记录被点击的槽位（PendingCell/PendingPersonId），
     /// 供 RefreshRoles 把人物精确落在作者点击的那个槽位上。
+    /// </summary>
     [HarmonyPatch(typeof(ModEvtEditView), "OnCreateRole")]
     internal static class EvtRoleDisplayCreatePatch
     {
-        /// 刚通过 + 按钮添加/替换人物的目标槽位（一次性，RefreshRoles 消费后清除）。
+        /// <summary>刚通过 + 按钮添加/替换人物的目标槽位（一次性，RefreshRoles 消费后清除）。</summary>
         internal static Cell_ModEvtRoleItemUI PendingCell;
-        internal static int PendingPersonId;
+        internal static int PendingPersonId = -1;
 
         internal static void ClearPending()
         {
             PendingCell = null;
-            PendingPersonId = 0;
+            PendingPersonId = -1;
         }
 
         private static bool Prefix(ModEvtEditView __instance, Cell_ModEvtRoleItemUI _cell)
@@ -433,6 +629,10 @@ namespace StudentAgeEditorPlus.Patches
                                         curSelect.roles.RemoveAll(
                                             (List<float> _p) => _p[0] == (float)_id);
                                         entry[0] = _id;
+                                        // oldId 也可能已从前驱在场；只改当前 1002 的 ID
+                                        // 会让旧人与新人同时留下。补一条旧人退场；若旧人
+                                        // 实际不在场，播放器会安全跳过这条冗余 2002。
+                                        RemoveRole(t, curSelect, oldId);
                                     }
                                     else
                                     {
@@ -482,8 +682,11 @@ namespace StudentAgeEditorPlus.Patches
 
                     var personCfgs = t.Field("personCfgs")
                         .GetValue<Dictionary<int, PersonCfg>>();
-                    var foundRoles = t.Method("FindRoles", new[] { typeof(int) })
-                        .GetValue(curSelectTalkId(t)) as Dictionary<int, TalkAxis>;
+                    var selectedTalk = t.Field("curSelect").GetValue<TalkCfg>();
+                    TalkPreviewSnapshot snapshot =
+                        EvtStageOffsetPatch.PrepareSnapshot(__instance, selectedTalk);
+                    Dictionary<int, TalkAxis> foundRoles =
+                        EvtRoleRosterResolver.Resolve(__instance, selectedTalk, snapshot);
                     var ignoreList = foundRoles != null
                         ? new List<int>(foundRoles.Keys)
                         : new List<int>();
@@ -496,13 +699,16 @@ namespace StudentAgeEditorPlus.Patches
             catch (Exception e)
             {
                 Plugin.Log.LogError($"[EvtRoleDisplayCreate] {e}");
-                return true; // 出错时回退到原方法
+                // 原 OnCreateRole 的选择回调同样调用不安全 FindRoles，不再回退。
+                return false;
             }
         }
 
+        /// <summary>
         /// 让人物 personId 从当前对话退场（与原版移除逻辑一致）：
         /// 删掉本对话里他的全部动作条目，补一条 2002 退场动作；
         /// 若他是当前说话人（roleIds），同步移除并刷新对话框头像。
+        /// </summary>
         private static void RemoveRole(Traverse t, TalkCfg curSelect, int personId)
         {
             if (curSelect.roles == null)
@@ -524,11 +730,5 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// 安全获取 curSelect.id，用于 FindRoles 调用。
-        private static int curSelectTalkId(Traverse t)
-        {
-            var curSelect = t.Field("curSelect").GetValue<TalkCfg>();
-            return curSelect != null ? curSelect.id : 0;
-        }
     }
 }

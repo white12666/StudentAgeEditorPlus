@@ -5,13 +5,15 @@
     <AssemblyName>StudentAgeEditorPlus</AssemblyName>
     <RootNamespace>StudentAgeEditorPlus</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
 
     <!-- BepInEx 不需要这些, 保持 plugins 目录干净 -->
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <DebugType>portable</DebugType>
     <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <!-- 本地开发默认部署；发布脚本传 DeployToGame=false，只生成独立发布包。 -->
+    <DeployToGame Condition="'$(DeployToGame)' == ''">true</DeployToGame>
 
     <!-- 游戏根目录(相对本工程: _modsrc/StudentAgeEditorPlus/ -> 上两级) -->
     <GameRoot>$(MSBuildProjectDirectory)\..\..</GameRoot>
@@ -19,6 +21,17 @@
     <BepInExCore>$(GameRoot)\BepInEx\core</BepInExCore>
     <PluginOutDir>$(GameRoot)\BepInEx\plugins\StudentAgeEditorPlus</PluginOutDir>
   </PropertyGroup>
+
+  <!-- Shared 默认编译进作者端；Runtime 是独立玩家插件，不能重复编译进 EditorPlus。 -->
+  <ItemGroup>
+    <Compile Remove="Runtime\**\*.cs" />
+    <!-- tools 是被 .gitignore 排除的本地分析/验证目录，不得被 SDK 默认通配
+         编进插件；其中可能包含独立测试项目及其 obj 生成源码。 -->
+    <Compile Remove="tools\**\*.cs" />
+    <!-- 构建 EditorPlus 时一并构建玩家端轻量运行库，但作者端程序集不引用它。 -->
+    <ProjectReference Include="Runtime\StudentAgeSocialRoleRuntime.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
 
   <!-- BepInEx / Harmony -->
   <ItemGroup>
@@ -54,6 +67,16 @@
       <HintPath>$(ManagedDir)\UnityEngine.UIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>$(ManagedDir)\UnityEngine.AudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- 剧情图窗口改用新 Input System 包轮询键鼠（Keyboard/Mouse.current）；
+         游戏启用了 Input System，旧 UnityEngine.Input（InputLegacyModule）运行时必炸，不得引用。 -->
+    <Reference Include="Unity.InputSystem">
+      <HintPath>$(ManagedDir)\Unity.InputSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
       <HintPath>$(ManagedDir)\UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>
@@ -66,10 +89,29 @@
       <HintPath>$(ManagedDir)\Unity.TextMeshPro.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- 中途剧情预览恢复背景滤镜与 CG 面板动画；均为游戏已自带程序集，不随插件打包。 -->
+    <Reference Include="UIEffect">
+      <HintPath>$(ManagedDir)\UIEffect.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DOTween">
+      <HintPath>$(ManagedDir)\DOTween.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DOTween.Modules">
+      <HintPath>$(ManagedDir)\DOTween.Modules.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- 游戏自带 Newtonsoft.Json（ModCtrl 保存配置就在用），社交资料JSON导入导出复用它 -->
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(ManagedDir)\Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
-  <!-- 构建后把 DLL 拷进 plugins/StudentAgeEditorPlus/ -->
-  <Target Name="CopyToPlugins" AfterTargets="Build">
+  <!-- 本地开发构建后部署作者端；正式发布由 package-release.ps1 生成独立压缩包。 -->
+  <Target Name="CopyToPlugins" AfterTargets="Build"
+          Condition="'$(DeployToGame)' == 'true'">
     <MakeDir Directories="$(PluginOutDir)" />
     <Copy SourceFiles="$(OutputPath)\$(AssemblyName).dll"
           DestinationFolder="$(PluginOutDir)"

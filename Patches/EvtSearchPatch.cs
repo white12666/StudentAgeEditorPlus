@@ -325,7 +325,7 @@ namespace StudentAgeEditorPlus.Patches
                 // 销毁可能残留的旧搜索栏（复用 prefab 时）
                 SearchBarUtil.DestroyExisting(parent);
 
-                var (barGo, input) = SearchBarUtil.Create(parent, "搜索 ID 或标题…");
+                var (barGo, input) = SearchBarUtil.Create(parent, "搜索编号（ID）或标题…");
                 var barRt = barGo.GetComponent<RectTransform>();
 
                 var originalOffsetMax = SearchBarUtil.PlaceAboveScroll(containerRt, barRt, SearchBarUtil.SearchBarHeight);
@@ -462,7 +462,7 @@ namespace StudentAgeEditorPlus.Patches
                 // 销毁残留
                 SearchBarUtil.DestroyExisting(parent);
 
-                var (barGo, input) = SearchBarUtil.Create(parent, "搜索 ID 或名称…");
+                var (barGo, input) = SearchBarUtil.Create(parent, "搜索编号（ID）或名称…");
                 var barRt = barGo.GetComponent<RectTransform>();
 
                 var originalOffsetMax = SearchBarUtil.PlaceAboveScroll(scrollRt, barRt, SearchBarUtil.SearchBarHeight);
@@ -618,7 +618,7 @@ namespace StudentAgeEditorPlus.Patches
 
                 SearchBarUtil.DestroyExisting(parent);
 
-                var (barGo, input) = SearchBarUtil.Create(parent, "搜索 ID 或台词…");
+                var (barGo, input) = SearchBarUtil.Create(parent, "搜索编号（ID）或台词…");
                 var barRt = barGo.GetComponent<RectTransform>();
 
                 var originalOffsetMax = SearchBarUtil.PlaceAboveScroll(scrollRt, barRt, SearchBarUtil.SearchBarHeight);

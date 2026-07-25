@@ -1,21 +1,26 @@
 using BepInEx;
+using BepInEx.Bootstrap;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
+using StudentAgeSocialRoles;
 using UnityEngine;
 
 namespace StudentAgeEditorPlus
 {
+    /// <summary>
     /// StudentAge MOD 编辑器增强插件（全新工程，取代已废弃的 StudentAgeModEditorFix）。
-    /// 修复内容：
-    ///   - 场景触发补全：让事件编辑器的「类型」下拉可选所有场景地图的进入/离开触发
-    ///     （详见 Patches/SceneEventTypePatch）。
+    /// 编辑器增强入口。除通用字段与事件编辑修复外，还为 NPC 人物编辑器增加
+    /// 可社交角色的教师/成人/自定义资料；玩家端显示由独立 SocialRoleRuntime 负责。
+    /// </summary>
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
+    [BepInDependency(SocialRoleRuntimeContract.PluginGuid,
+        BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
         public const string PluginGuid = "com.studentage.editorplus";
         public const string PluginName = "StudentAge Editor Plus";
-        public const string PluginVersion = "0.2.0";
+        public const string PluginVersion = "0.3.0";
 
         internal static ManualLogSource Log;
         internal static Harmony HarmonyInstance;
@@ -33,6 +38,7 @@ namespace StudentAgeEditorPlus
 
             HarmonyInstance = new Harmony(PluginGuid);
             HarmonyInstance.PatchAll();
+            LogRuntimeStatus();
 
             if (_runDiagnostic.Value)
             {
@@ -44,6 +50,32 @@ namespace StudentAgeEditorPlus
             }
 
             Log.LogInfo($"{PluginName} v{PluginVersion} 已加载。");
+        }
+
+        private static void LogRuntimeStatus()
+        {
+            if (!Chainloader.PluginInfos.TryGetValue(
+                    SocialRoleRuntimeContract.PluginGuid, out var runtime))
+            {
+                Log.LogWarning(
+                    "未检测到独立的 StudentAge Social Role Runtime。资料仍可编辑，" +
+                    "但教师/成人/自定义资料无法在游戏内正确预览；请单独安装 Runtime。");
+                return;
+            }
+
+            var minimum = new System.Version(SocialRoleRuntimeContract.MinimumVersionForV2);
+            if (runtime.Metadata.Version.CompareTo(minimum) < 0)
+            {
+                Log.LogWarning(
+                    $"检测到 Social Role Runtime v{runtime.Metadata.Version}，" +
+                    $"低于 V{SocialRoleRuntimeContract.DataFormatVersion} 资料所需的最低版本 " +
+                    $"v{minimum}，请升级独立 Runtime。");
+                return;
+            }
+
+            Log.LogInfo(
+                $"已检测到独立 Social Role Runtime v{runtime.Metadata.Version}，" +
+                "游戏内资料预览可用。");
         }
     }
 }

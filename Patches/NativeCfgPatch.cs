@@ -305,10 +305,10 @@ namespace StudentAgeEditorPlus.Patches
         {
             var classmateTypes = new[]
             {
-                (typeof(ClassmateCfg),       "同学(小学)",    25060180uL),
-                (typeof(Classmate2Cfg),      "同学(初中)",    25060181uL),
-                (typeof(Classmate3LiKeCfg),  "同学(高中理科)", 25060182uL),
-                (typeof(Classmate3WenKeCfg), "同学(高中文科)", 25060183uL),
+                (typeof(ClassmateCfg),       "考试同学（小学）",    25060180uL),
+                (typeof(Classmate2Cfg),      "考试同学（初中）",    25060181uL),
+                (typeof(Classmate3LiKeCfg),  "考试同学（高中理科）", 25060182uL),
+                (typeof(Classmate3WenKeCfg), "考试同学（高中文科）", 25060183uL),
             };
 
             foreach (var (cfgType, displayName, order) in classmateTypes)
@@ -320,23 +320,27 @@ namespace StudentAgeEditorPlus.Patches
                     Order = order,
                     Fields = new List<FieldDef>
                     {
-                        F("id", "ID",
-                            desc: "该同学条目的唯一编号，不可重复。\n原版从 1 开始递增，新增同学建议从较大的编号开始避免冲突。",
+                        F("id", "选择要调整的同学",
+                            desc: "从当前年级的考试同学表中选择。选择后会自动带出该同学的名称、人物、性别、权重和条件。",
+                            required: true,
+                            range: cfgType),
+                        F("name", "榜单姓名",
+                            desc: "考试榜上显示的姓名。选择同学后会自动填写，通常无需修改。",
                             required: true),
-                        F("name", "名称",
-                            desc: "同学名称，游戏内随机分配同学时会显示此名称。",
-                            required: true),
-                        F("roleId", "人物ID",
-                            desc: "该同学对应的人物ID，从下拉列表选择。\n决定同学的立绘和基础属性。留空则使用默认形象。",
+                        F("roleId", "关联剧情人物（可选）",
+                            desc: "有独立 PersonCfg 的同学可关联人物；普通同学保持 0 即可。下拉也包含当前 Mod 尚未发布的人物。",
                             range: typeof(PersonCfg)),
                         F("gender", "性别",
-                            desc: "性别。1=男，2=女。\n需与对应人物的性别一致，否则可能出现立绘不匹配的情况。"),
-                        F("weight", "权重",
-                            desc: "随机分配时该同学的出现概率权重，数值越大越容易被选中。\n原版权重按指数递减（如 85亿→7.5亿→1.9亿），建议参考原版规律设置。"),
-                        F("cond", "条件",
+                            desc: "1=男，2=女。选择同学后会自动填写。"),
+                        F("weight", "排名倾向权重",
+                            desc: "不是考试分数。数值越大，通常越容易排在当前排名段的前面；最终分数仍由实际名次生成。\n" +
+                                  "建议在原值附近小幅调整，不要直接填写极大数字；填 0 表示不参加考试榜。"),
+                        F("cond", "生效条件",
                             type: CfgPropertyType.Condition,
-                            desc: "该同学出现需满足的条件。"),
+                            desc: "留空表示一直生效。也可按剧情启用，例如事件未发生填 3,-1,事件ID，" +
+                                  "事件已发生填 3,1,事件ID。条件变化从下一场考试开始体现。"),
                     },
+                    OnRenderPropertyHook = ClassmateCfgEditorUtil.OnRenderProperty,
                 });
             }
         }
