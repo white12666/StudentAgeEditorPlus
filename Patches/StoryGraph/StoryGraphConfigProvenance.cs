@@ -87,12 +87,18 @@ namespace StudentAgeEditorPlus.Patches
                 if (hasCapture) return new HashSet<int>(captured);
             }
 
-            // 极端情况下插件在 Mod 合并后才启用，无法再还原来源。用
-            // “当前全局 - 当前 Mod JSON”降级，至少不会再次把创意工坊自身
-            // 的记录误判为内置；下一次完整启动会走精确的合并前快照。
+            // 插件随 BepInEx 在游戏启动前装好 MergeCfgsAsync 前缀，而
+            // activeMods 为空时 ModCtrl.Load 提前 return、MergeCfgsAsync
+            // 根本不执行。因此“未捕获”意味着尚无任何 Mod 合并进 Cfg，
+            // 当前全局编号就是纯原生全集，直接整体返回。绝不能再减去
+            // ownedIds：Mod JSON 中的内置覆盖副本编号本来就属于原生集，
+            // 减掉会让“内置基底禁止伪删除”保护静默失效（覆盖被删后
+            // 以原版原文复活）。理论上的热重载边缘（合并发生过但前缀
+            // 没装）会把 Mod 自身已合并的条目也判为原生——只会过度保护、
+            // 拒绝删除（fail-closed），可接受；ownedIds 参数保留仅为
+            // 调用方语义完整，这里有意不使用。
             var fallback = new HashSet<int>(
                 currentGlobal ?? Enumerable.Empty<int>());
-            if (ownedIds != null) fallback.ExceptWith(ownedIds);
             fallback.RemoveWhere(id => id <= 0);
             return fallback;
         }

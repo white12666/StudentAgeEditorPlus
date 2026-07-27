@@ -362,9 +362,34 @@ namespace StudentAgeEditorPlus.Patches
     [HarmonyPatch(typeof(ModEvtEditView), "OnClickSave")]
     internal static class ModEvtDeleteSavePatch
     {
-        private static void Prefix(ModEvtEditView __instance)
+        private static bool Prefix(ModEvtEditView __instance)
         {
+            // 事务日志滞留期间，原版全量保存会改写两份配置并破坏日志指纹，
+            // 使自动恢复永久失败（配置被判定为外部修改而锁死）。此时必须整体
+            // 拦下普通保存；守卫自身异常则放行（无法判定时不阻塞正常使用）。
+            try
+            {
+                string modRoot;
+                string error;
+                if (EvtStoryGraphViewAccess.TryGetModRoot(
+                        __instance, out modRoot, out error)
+                    && StoryGraphEditPersistence.HasPendingTransaction(modRoot))
+                {
+                    string message = "存在未完成的剧情图保存事务，已阻止普通保存以免破坏自动恢复；"
+                                   + "请关闭并重新打开事件完成恢复后再保存。";
+                    Plugin.Log?.LogWarning("[EvtDeletePersistence] " + message);
+                    try { ToastHelper.Toast(message); }
+                    catch { }
+                    return false;
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log?.LogError("[EvtDeletePersistence.SaveGuard] " + e);
+            }
+
             ModEvtDeletePersistence.BeforeOrdinarySave(__instance);
+            return true;
         }
     }
 }
