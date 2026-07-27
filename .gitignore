@@ -17,6 +17,3 @@ RESEARCH-*.md
 *-DESIGN-*.md
 DESIGN-*.md
 剧情图重做方案.md
-
-# 测试工程（主工程已 Compile Remove，不参与插件构建）
-Tests/
