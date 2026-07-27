@@ -14,6 +14,10 @@
     <NoWarn>$(NoWarn);CS0436</NoWarn>
     <!-- 本地开发默认部署；发布脚本传 DeployToGame=false，只生成独立发布包。 -->
     <DeployToGame Condition="'$(DeployToGame)' == ''">true</DeployToGame>
+    <!-- classlib 默认不把 NuGet 依赖 dll 落到 OutputPath；CSharpMath/SkiaSharp 现在是
+         Typeset 库工程经 ProjectReference 传递来的 NuGet 依赖，CopyToPlugins 仍需要从
+         OutputPath 白名单拣取这些托管 dll，故强制拷贝。 -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
 
     <!-- 游戏根目录(相对本工程: _modsrc/StudentAgeEditorPlus/ -> 上两级) -->
     <GameRoot>$(MSBuildProjectDirectory)\..\..</GameRoot>
@@ -25,6 +29,9 @@
   <!-- Shared 默认编译进作者端；Runtime 是独立玩家插件，不能重复编译进 EditorPlus。 -->
   <ItemGroup>
     <Compile Remove="Runtime\**\*.cs" />
+    <!-- Typeset 是被真实引用的一方排版类库（见下方 ProjectReference），其源码
+         绝不能再被 SDK 默认通配编进 EditorPlus，否则类型重复（CS0101）。 -->
+    <Compile Remove="Typeset\**\*.cs" />
     <!-- tools 是被 .gitignore 排除的本地分析/验证目录，不得被 SDK 默认通配
          编进插件；其中可能包含独立测试项目及其 obj 生成源码。 -->
     <Compile Remove="tools\**\*.cs" />
@@ -32,6 +39,11 @@
     <!-- 构建 EditorPlus 时一并构建玩家端轻量运行库，但作者端程序集不引用它。 -->
     <ProjectReference Include="Runtime\StudentAgeSocialRoleRuntime.csproj"
                       ReferenceOutputAssembly="false" />
+    <!-- 排版类库（LaTeX 引擎）是真实引用：与上面 Runtime 的"只连带构建"不同，
+         EditorPlus 编译期直接使用其 internal 类型（库侧 InternalsVisibleTo），
+         其 DLL 与 NuGet 传递依赖（CSharpMath/SkiaSharp）随本工程一起进
+         OutputPath / 插件目录。 -->
+    <ProjectReference Include="Typeset\StudentAgeTypeset.csproj" />
   </ItemGroup>
 
   <!-- BepInEx / Harmony -->
@@ -86,6 +98,11 @@
       <HintPath>$(ManagedDir)\UnityEngine.TextRenderingModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- 块级公式预览把 PNG 字节解码进 Texture2D（ImageConversion.LoadImage 扩展）。 -->
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(ManagedDir)\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Unity.TextMeshPro">
       <HintPath>$(ManagedDir)\Unity.TextMeshPro.dll</HintPath>
       <Private>false</Private>
@@ -119,10 +136,24 @@
   <Target Name="CopyToPlugins" AfterTargets="Build"
           Condition="'$(DeployToGame)' == 'true'">
     <MakeDir Directories="$(PluginOutDir)" />
-    <Copy SourceFiles="$(OutputPath)\$(AssemblyName).dll"
+    <ItemGroup>
+      <!-- 白名单拣取，绝不整目录拷：OutputPath 里还有 System.Buffers/System.Memory/
+           System.Numerics.Vectors/System.Runtime.CompilerServices.Unsafe——游戏
+           Managed 已自带这四个，随包再带会双重加载冲突。 -->
+      <PluginPayload Include="$(OutputPath)\$(AssemblyName).dll" />
+      <PluginPayload Include="$(OutputPath)\StudentAgeTypeset.dll" />
+      <PluginPayload Include="$(OutputPath)\CSharpMath.dll" />
+      <PluginPayload Include="$(OutputPath)\CSharpMath.Rendering.dll" />
+      <PluginPayload Include="$(OutputPath)\CSharpMath.Editor.dll" />
+      <PluginPayload Include="$(OutputPath)\CSharpMath.SkiaSharp.dll" />
+      <PluginPayload Include="$(OutputPath)\SkiaSharp.dll" />
+      <!-- 原生 dll 由 Typeset 库的 None(CopyToOutputDirectory) 项流转进 OutputPath。 -->
+      <PluginPayload Include="$(OutputPath)\libSkiaSharp.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PluginPayload)"
           DestinationFolder="$(PluginOutDir)"
           SkipUnchangedFiles="false" />
-    <Message Importance="high" Text="[StudentAgeEditorPlus] 已部署到 $(PluginOutDir)\$(AssemblyName).dll" />
+    <Message Importance="high" Text="[StudentAgeEditorPlus] 已部署到 $(PluginOutDir)\$(AssemblyName).dll（含 StudentAgeTypeset 与 CSharpMath/SkiaSharp 依赖）" />
   </Target>
 
 </Project>

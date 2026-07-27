@@ -55,7 +55,8 @@ function New-VerifiedZip {
     param(
         [Parameter(Mandatory = $true)][string]$StageDirectory,
         [Parameter(Mandatory = $true)][string]$Destination,
-        [Parameter(Mandatory = $true)][string[]]$RequiredEntries
+        [Parameter(Mandatory = $true)][string[]]$RequiredEntries,
+        [string[]]$ForbiddenEntries = @()
     )
 
     if ([System.IO.File]::Exists($Destination)) {
@@ -101,6 +102,11 @@ function New-VerifiedZip {
                 throw "压缩包缺少必要文件 '$required': $Destination"
             }
         }
+        foreach ($forbidden in $ForbiddenEntries) {
+            if ($entries.ContainsKey($forbidden.Replace("\", "/"))) {
+                throw "压缩包混入了禁止随包分发的文件 '$forbidden': $Destination"
+            }
+        }
     }
     finally {
         $archive.Dispose()
@@ -129,8 +135,36 @@ else {
     Write-Host "[1/4] 跳过构建，使用现有 $Configuration 产物。" -ForegroundColor Yellow
 }
 
-$editorDll = Join-Path $repoRoot "bin\$Configuration\StudentAgeEditorPlus.dll"
+$editorBinDir = Join-Path $repoRoot "bin\$Configuration"
+$editorDll = Join-Path $editorBinDir "StudentAgeEditorPlus.dll"
 $runtimeDll = Join-Path $repoRoot "Runtime\bin\$Configuration\StudentAgeSocialRoleRuntime.dll"
+
+# 块级 LaTeX 公式渲染的运行时依赖，必须随作者端一起分发。
+# StudentAgeTypeset.dll 是一方排版类库（LaTeX 引擎所在），经 ProjectReference 落
+# $editorBinDir；CSharpMath/SkiaSharp 托管 dll 由 EditorPlus 的
+# CopyLocalLockFileAssemblies（传递 NuGet 依赖）落进同一目录；原生 libSkiaSharp.dll
+# (win-x64) 由 Typeset csproj 的 None(CopyToOutputDirectory) 项流转到位——
+# 全部同源于 $editorBinDir，不依赖本机 NuGet 缓存路径。
+$editorRuntimeDeps = @(
+    "StudentAgeTypeset.dll",
+    "CSharpMath.dll",
+    "CSharpMath.Rendering.dll",
+    "CSharpMath.Editor.dll",
+    "CSharpMath.SkiaSharp.dll",
+    "SkiaSharp.dll",
+    "libSkiaSharp.dll"
+)
+
+# 构建输出目录里还有这四个：游戏 StudentAge_Data/Managed 已自带，随包再带会双重
+# 加载冲突。所以只能白名单逐个拣取，绝不整目录拷；打包后再校验一次确实没混进去。
+$editorForbiddenDeps = @(
+    "System.Buffers.dll",
+    "System.Memory.dll",
+    "System.Numerics.Vectors.dll",
+    "System.Runtime.CompilerServices.Unsafe.dll"
+)
+
+$editorPluginEntryRoot = "BepInEx/plugins/StudentAgeEditorPlus"
 $marker = Join-Path $repoRoot "Packaging\workshop-plugin.json"
 $license = Join-Path $repoRoot "LICENSE"
 $fixGuide = Join-Path $repoRoot "修复说明.md"
@@ -153,8 +187,11 @@ try {
     Copy-RequiredFile $fixGuide (Join-Path $editorStage "修复说明.md")
     Copy-RequiredFile $distributionGuide (Join-Path $editorStage "发布与依赖.md")
     Copy-RequiredFile $license (Join-Path $editorStage "LICENSE")
-    Copy-RequiredFile $editorDll (Join-Path $editorStage `
-        "BepInEx\plugins\StudentAgeEditorPlus\StudentAgeEditorPlus.dll")
+    $editorPluginStage = Join-Path $editorStage "BepInEx\plugins\StudentAgeEditorPlus"
+    Copy-RequiredFile $editorDll (Join-Path $editorPluginStage "StudentAgeEditorPlus.dll")
+    foreach ($dep in $editorRuntimeDeps) {
+        Copy-RequiredFile (Join-Path $editorBinDir $dep) (Join-Path $editorPluginStage $dep)
+    }
 
     Copy-RequiredFile $marker (Join-Path $runtimeStage "workshop-plugin.json")
     Copy-RequiredFile (Join-Path $repoRoot "Runtime\README.md") `
@@ -169,14 +206,19 @@ try {
         "StudentAgeSocialRoleRuntime-v$runtimeVersion.zip"
 
     Write-Host "[3/4] 生成并校验压缩包..." -ForegroundColor Cyan
-    New-VerifiedZip $editorStage $editorPackage @(
+    $editorRequiredEntries = @(
         "workshop-plugin.json",
         "README.md",
         "修复说明.md",
         "发布与依赖.md",
         "LICENSE",
-        "BepInEx/plugins/StudentAgeEditorPlus/StudentAgeEditorPlus.dll"
+        "$editorPluginEntryRoot/StudentAgeEditorPlus.dll"
+    ) + @($editorRuntimeDeps | ForEach-Object { "$editorPluginEntryRoot/$_" })
+    $editorForbiddenEntries = @(
+        $editorForbiddenDeps | ForEach-Object { "$editorPluginEntryRoot/$_" }
     )
+    New-VerifiedZip $editorStage $editorPackage `
+        $editorRequiredEntries $editorForbiddenEntries
     New-VerifiedZip $runtimeStage $runtimePackage @(
         "workshop-plugin.json",
         "README.md",

@@ -4,6 +4,8 @@ using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
 using StudentAgeSocialRoles;
+using StudentAgeTypeset;
+using StudentAgeTypeset.Latex;
 using UnityEngine;
 
 namespace StudentAgeEditorPlus
@@ -26,15 +28,28 @@ namespace StudentAgeEditorPlus
         internal static Harmony HarmonyInstance;
 
         private static ConfigEntry<bool> _runDiagnostic;
+        private static ConfigEntry<bool> _latexSelfTest;
 
         private void Awake()
         {
             Log = Logger;
+            // 排版类库（StudentAgeTypeset）的日志接缝：必须先于 PatchAll 注入，
+            // 保证任何补丁触发的库内日志从一开始就能落到 BepInEx 日志。
+            TypesetLog.Info = s => Log.LogInfo(s);
+            TypesetLog.Warn = s => Log.LogWarning(s);
+            TypesetLog.Error = s => Log.LogError(s);
 
             // 排查工具：场景触发诊断（默认关闭）。需要时把配置项设为 true 再启动游戏。
             _runDiagnostic = Config.Bind(
                 "Diagnostics", "RunSceneTriggerDiagnostic", false,
                 "启动时 dump 场景触发机制诊断到 BepInEx/SceneTriggerDiag.txt（排查用，默认关闭）。");
+
+            // 排查工具：块级公式渲染自检（默认关闭）。用于在真实 Unity Mono 环境验证
+            // CSharpMath + libSkiaSharp 原生链路——harness 检查产物 PNG 与日志即可判定。
+            _latexSelfTest = Config.Bind(
+                "Diagnostics", "LatexSelfTest", false,
+                "启动时渲染测试公式到 BepInEx/config/StudentAgeEditorPlus/selftest_formula.png " +
+                "并记录成败与耗时，验证块级公式渲染链路（排查用，默认关闭）。");
 
             HarmonyInstance = new Harmony(PluginGuid);
             HarmonyInstance.PatchAll();
@@ -49,7 +64,44 @@ namespace StudentAgeEditorPlus
                 Log.LogInfo("场景触发诊断已启用。");
             }
 
+            if (_latexSelfTest.Value)
+            {
+                RunLatexSelfTest();
+            }
+
             Log.LogInfo($"{PluginName} v{PluginVersion} 已加载。");
+        }
+
+        private static void RunLatexSelfTest()
+        {
+            try
+            {
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                bool ok = FormulaRenderer.TryRenderCard(
+                    @"\frac{a}{b}=c^2", out byte[] png, out string error);
+                stopwatch.Stop();
+                if (!ok)
+                {
+                    Log.LogWarning(
+                        $"LaTeX 自检失败（{stopwatch.ElapsedMilliseconds}ms）: {error}");
+                    return;
+                }
+                string dir = System.IO.Path.Combine(Paths.ConfigPath, "StudentAgeEditorPlus");
+                System.IO.Directory.CreateDirectory(dir);
+                string path = System.IO.Path.Combine(dir, "selftest_formula.png");
+                System.IO.File.WriteAllBytes(path, png);
+                Log.LogInfo(
+                    $"LaTeX 自检通过（{stopwatch.ElapsedMilliseconds}ms，{png.Length} 字节）: {path}");
+                if (FormulaRenderer.CjkWarning != null)
+                {
+                    Log.LogWarning("LaTeX 自检: " + FormulaRenderer.CjkWarning);
+                }
+            }
+            catch (System.Exception error)
+            {
+                // 自检绝不能拖垮插件启动。
+                Log.LogWarning("LaTeX 自检异常: " + error);
+            }
         }
 
         private static void LogRuntimeStatus()

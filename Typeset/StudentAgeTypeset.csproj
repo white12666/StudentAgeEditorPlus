@@ -1,0 +1,76 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AssemblyName>StudentAgeTypeset</AssemblyName>
+    <RootNamespace>StudentAgeTypeset</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <!-- 排版类库自己的版本，与 EditorPlus 插件版本独立演进；
+         发布脚本不读它（zip 版本号取 EditorPlus），仅作程序集元数据。 -->
+    <Version>0.1.0</Version>
+
+    <!-- BepInEx 不需要这些, 保持 plugins 目录干净 -->
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <DebugType>portable</DebugType>
+    <!-- classlib 默认不把 NuGet 依赖 dll 落到 OutputPath；库自身 bin 也要是
+         完整六件套（独立排查/独立构建验证用），故强制拷贝。 -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+
+    <!-- 游戏根目录(相对本工程: _modsrc/StudentAgeEditorPlus/Typeset/ -> 上三级) -->
+    <GameRoot>$(MSBuildProjectDirectory)\..\..\..</GameRoot>
+    <ManagedDir>$(GameRoot)\StudentAge_Data\Managed</ManagedDir>
+    <BepInExCore>$(GameRoot)\BepInEx\core</BepInExCore>
+  </PropertyGroup>
+
+  <!-- EditorPlus 经 IVT 访问本库 internal 类型：类型不做 public API 承诺，
+       跨程序集边界仍由本仓库统一审查。双方均无强命名，简单名即可；
+       将来若给任一程序集签名，这里必须改成带 PublicKey 的完整名。 -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="StudentAgeEditorPlus" />
+  </ItemGroup>
+
+  <!-- 块级 LaTeX 公式渲染（FormulaRenderer）。SkiaSharp 显式引用同一传递版本，
+       仅为 GeneratePathProperty 拿到 $(PkgSkiaSharp) 定位 win-x64 原生 libSkiaSharp.dll。
+       不设 PrivateAssets：包依赖必须沿 ProjectReference 传递给 EditorPlus，
+       其 CopyLocalLockFileAssemblies 才能把托管 dll 落进自己的 OutputPath 供白名单取件。 -->
+  <ItemGroup>
+    <PackageReference Include="CSharpMath.SkiaSharp" Version="0.5.1" GeneratePathProperty="true" />
+    <PackageReference Include="SkiaSharp" Version="2.80.1" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <!-- 原生 libSkiaSharp.dll 不在 NuGet 托管资产里（classlib 不复制 runtimes/）。
+       用带 CopyToOutputDirectory 的 None 项声明：同时落本库 bin，并经
+       GetCopyToOutputDirectoryItems 流转一跳带进直接引用方（EditorPlus）的
+       OutputPath——package-release.ps1 从 EditorPlus bin 取件的前提因此保持成立。
+       FormulaRenderer 按 typeof(...).Assembly.Location 同目录 LoadLibrary，
+       部署时本库 dll 与原生 dll 必须同目录。 -->
+  <ItemGroup>
+    <None Include="$(PkgSkiaSharp)\runtimes\win-x64\native\libSkiaSharp.dll"
+          Link="libSkiaSharp.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
+  </ItemGroup>
+
+  <!-- BepInEx（LatexSourceStore 的边车目录锚在 Paths.ConfigPath） -->
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>$(BepInExCore)\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- 游戏程序集：TalkCfg/OptionCfg/Cfg 等配置类型（烘焙/归属判定/删除 GC 用）。
+       本库不引用 UnityEngine / Harmony——渲染是纯 SkiaSharp，补丁层全部留在 EditorPlus。 -->
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(ManagedDir)\Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
