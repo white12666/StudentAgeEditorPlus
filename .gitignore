@@ -10,3 +10,13 @@ tools/
 .vs/
 .idea/
 *.user
+
+# 开发过程资料（阶段性设计 / 审查 / 调研记录，不随源码发布）
+REVIEW-*.md
+RESEARCH-*.md
+*-DESIGN-*.md
+DESIGN-*.md
+剧情图重做方案.md
+
+# 测试工程（主工程已 Compile Remove，不参与插件构建）
+Tests/
