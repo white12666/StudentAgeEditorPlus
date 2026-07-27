@@ -302,6 +302,10 @@ namespace StudentAgeEditorPlus.Patches
                 "nextEvtId 是后备路径：小游戏接管或当前条件已有 Talk 结果时不会执行。",
                 -290f, 64f, SubtitleColor);
 
+            // 行内公式预览与块级公式区（设计 §6.1）：追加在基础页末尾，
+            // 布局由 RelayoutBasicInspector 统一推进游标。
+            BuildFormulaInspectorSection(page);
+
             _inspectorContentInput.onValueChanged.AddListener(OnInspectorBasicValueChanged);
             _inspectorSpeakerInput.onValueChanged.AddListener(OnInspectorSpeakerValueChanged);
             _inspectorShowInput.onValueChanged.AddListener(OnInspectorBasicValueChanged);
@@ -1196,6 +1200,7 @@ namespace StudentAgeEditorPlus.Patches
                 (RectTransform)_inspectorContentInput.transform,
                 TakeInspectorSlot(ref cursor, contentHeight, 8f),
                 contentHeight);
+            LayoutInlineFormulaPreview(ref cursor);
 
             bool showPrimaryRow =
                 (_inspectorSpeakerRow != null
@@ -1235,6 +1240,7 @@ namespace StudentAgeEditorPlus.Patches
                     TakeInspectorSlot(ref cursor, hintHeight, 12f),
                     hintHeight);
             }
+            LayoutFormulaInspectorSection(ref cursor);
             _basicInspectorPageHeight = Math.Max(300f, 0f - cursor);
             RefreshInspectorContentHeight();
         }

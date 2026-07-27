@@ -412,7 +412,10 @@ namespace StudentAgeEditorPlus.Patches
                         string warn = Validate(ModCtrl.StrToList<double>(_txt), _isTalk);
                         if (warn != null)
                         {
-                            ToastHelper.Toast(warn);
+                            // 走路由：点“剧情图”按钮的 pointer-down 会先触发本
+                            // 失焦校验，提示会被随后建起的 Overlay 盖住；路由
+                            // 会记录回落消息，剧情图建画布时补发到图内。
+                            StoryGraphToastRouter.Show(warn);
                         }
                     }
                 }

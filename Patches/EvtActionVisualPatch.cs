@@ -9,6 +9,7 @@ using GenUI.Common;
 using GenUI.Mod;
 using HarmonyLib;
 using Sdk;
+using StudentAgeTypeset.Latex;
 using UnityEngine;
 using UnityEngine.UI;
 using View.Evt;
@@ -1458,9 +1459,11 @@ namespace StudentAgeEditorPlus.Patches
         {
             try
             {
+                // 失败提示统一走路由：从剧情图进入预览时画布刚被暂隐、
+                // 失败后立即恢复，原版 Toast 会被重新盖住看不见。
                 if (view == null)
                 {
-                    ToastHelper.Toast("事件编辑器已关闭，无法预览本句");
+                    StoryGraphToastRouter.Show("事件编辑器已关闭，无法预览本句");
                     return false;
                 }
 
@@ -1472,7 +1475,7 @@ namespace StudentAgeEditorPlus.Patches
                     talkList, requestedTalk);
                 if (!string.IsNullOrEmpty(validation))
                 {
-                    ToastHelper.Toast(validation);
+                    StoryGraphToastRouter.Show(validation);
                     return false;
                 }
 
@@ -1490,25 +1493,36 @@ namespace StudentAgeEditorPlus.Patches
                     ? SnapshotOptionSource(optionSource)
                     : t.Field("optionCfgs")
                         .GetValue<Dictionary<int, OptionCfg>>();
-                var optionMap = Merge(optionCfgsRaw, Cfg.OptionCfgMap);
+                var optionMap = BakeOptionsForPreview(
+                    Merge(optionCfgsRaw, Cfg.OptionCfgMap));
                 if (HasReachableEmptyTalkCycle(
                         talkMap, optionMap, requestedTalk.id))
                 {
-                    ToastHelper.Toast("当前对话后方存在空白对话循环，原预览器会同步递归直至崩溃；请先修正跳转关系");
+                    StoryGraphToastRouter.Show("当前对话后方存在空白对话循环，原预览器会同步递归直至崩溃；请先修正跳转关系");
                     return false;
                 }
 
                 var personMap = t.Field("personCfgs").GetValue<Dictionary<int, PersonCfg>>(); // 已含原版
                 var bgMap = Merge(t.Field("customBgCfgs").GetValue<Dictionary<int, BgCfg>>(), Cfg.BgCfgMap);
-                var cgMap = Merge(t.Field("customCGCfgs").GetValue<Dictionary<int, CGCfg>>(), Cfg.CGCfgMap);
-
-                // audioCfgs 懒加载，先确保加载（内部已含原版合并）
-                t.Method("LoadAudioCfg").GetValue();
-                var audioMap = t.Field("audioCfgs").GetValue<Dictionary<int, AudioCfg>>();
 
                 int gradeState = t.Field("gradeState").GetValue<int>();
                 var gender = t.Field("gender").GetValue<GenderDefine>();
                 string modRoot = t.Field("modRoot").GetValue<string>();
+
+                // CG 表必须每次从磁盘重读（与 faces/items/books 同口径）：
+                // customCGCfgs 是事件打开那一刻的一次性快照（ModEvtEditView.cs:161），
+                // Cfg.CGCfgMap 是启动快照，而块级公式刚分配的 cgId 按构造必然不在
+                // 这两张表里——用它们做预览，CGView.Refresh 的裸索引器
+                // cgCfgMap[_id] 必抛 KeyNotFoundException，预览停在半开黑框态（L3-2）。
+                var cgMap = EvtPreviewConfigLoader.LoadCgs(modRoot);
+                // 公式条目换成本机绝对路径：相对 url 要经 GetFullUrl → modPackageIds，
+                // 而那张表只覆盖启动时已启用的 mod，作者正在编辑的作品未必在内，
+                // 解析失败时 CGView 会淡入一个空 sprite（纯白方块）而不是报错。
+                FormulaAssetService.LocalizeFormulaUrls(cgMap, modRoot);
+
+                // audioCfgs 懒加载，先确保加载（内部已含原版合并）
+                t.Method("LoadAudioCfg").GetValue();
+                var audioMap = t.Field("audioCfgs").GetValue<Dictionary<int, AudioCfg>>();
 
                 // 必须与 ModPreviewTipsView.OnClickOK 一样传满 12 项。尤其第 10 项
                 // ModFaceCfg 决定图片型人物的 3000 自定义表情；若省略，只会回退
@@ -1539,7 +1553,7 @@ namespace StudentAgeEditorPlus.Patches
                     TalkPreviewPlaybackMode.Preview, audioMap, bgMap);
                 if (!startSnapshot.Reliable)
                 {
-                    ToastHelper.Toast(
+                    StoryGraphToastRouter.Show(
                         "当前对话的前驱存在循环，无法唯一恢复执行前状态；请先修正跳转或使用完整剧情预览");
                     return false;
                 }
@@ -1547,7 +1561,7 @@ namespace StudentAgeEditorPlus.Patches
                 {
                     // 分支合流没有运行时选项记录，任意选择一个前驱都可能让人物/
                     // CG 状态来自错误分支。宁可阻止，也不展示看似正常的错误预览。
-                    ToastHelper.Toast(
+                    StoryGraphToastRouter.Show(
                         "当前对话存在多个前驱，无法判断要恢复哪条分支；请从完整剧情预览进入该分支");
                     return false;
                 }
@@ -1577,7 +1591,7 @@ namespace StudentAgeEditorPlus.Patches
             catch (Exception e)
             {
                 Plugin.Log.LogError($"[EvtTalkPreview] {e}");
-                try { ToastHelper.Toast("预览本句打开失败；请查看 BepInEx 日志"); }
+                try { StoryGraphToastRouter.Show("预览本句打开失败；请查看 BepInEx 日志"); }
                 catch { }
                 return false;
             }
@@ -1777,6 +1791,33 @@ namespace StudentAgeEditorPlus.Patches
 
 
         /// <summary>
+        /// 选项正文的预览烘焙（D5-3）：选项按钮文本也是 TMP
+        /// （Cell_CommonOptionItemUI.txtex_content），玩家看到的是烘焙产物，
+        /// 预览里必须一致，否则作者在预览里看到的是 $…$ 源码。
+        ///
+        /// 只对**含 $ 的条目**换成烘焙后的副本，其余原样直传（不做无谓拷贝）；
+        /// 绝不就地改写——这些对象可能是 Cfg.OptionCfgMap 里的全局实例，
+        /// 就地改会污染本局全局配置（与 D6-1 同一个坑）。
+        /// </summary>
+        private static Dictionary<int, OptionCfg> BakeOptionsForPreview(
+            Dictionary<int, OptionCfg> source)
+        {
+            if (source == null) return null;
+            Dictionary<int, OptionCfg> result = null;
+            foreach (KeyValuePair<int, OptionCfg> pair in source)
+            {
+                OptionCfg option = pair.Value;
+                if (option == null
+                    || !LatexInlineTranspiler.ContainsLatex(option.content)) continue;
+                if (result == null) result = new Dictionary<int, OptionCfg>(source);
+                OptionCfg copy = StoryGraphEditSession.CloneOption(option);
+                copy.content = LatexInlineTranspiler.Bake(option.content).Baked;
+                result[pair.Key] = copy;
+            }
+            return result ?? source;
+        }
+
+        /// <summary>
         /// TalkCfg 浅拷贝：roles 用新列表（条目内层 List 共享引用——预览只读
         /// 条目内容，但会对 roles 列表本身就地排序，必须隔离），其余字段直传。
         /// </summary>
@@ -1787,7 +1828,11 @@ namespace StudentAgeEditorPlus.Patches
                 audio = src.audio,
                 bg = src.bg,
                 check = src.check,
-                content = src.content,
+                // 行内 $…$ 在预览副本上烘焙成 TMP 标签：真实预览与玩家所见一致
+                //（设计 §6.1）；编辑器/草稿内存仍保留作者源码。Bake 幂等不抛。
+                content = LatexInlineTranspiler.ContainsLatex(src.content)
+                    ? LatexInlineTranspiler.Bake(src.content).Baked
+                    : src.content,
                 effect = src.effect,
                 effect2 = src.effect2,
                 highlights = src.highlights,

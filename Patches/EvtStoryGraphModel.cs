@@ -184,6 +184,13 @@ namespace StudentAgeEditorPlus.Patches
             internal EvtCfg EventConfig;
             internal int EventId;
             internal int NodeSerial;
+
+            /// <summary>
+            /// 事件按 StateEvtView 播放（type==60 或 displayType==1）：
+            /// talk.check/nextTalk2 与 option.nextEvtId 从不读取，
+            /// 选项 talkId/talkId2 阈值为 >0 而非 >1。
+            /// </summary>
+            internal bool StateEventView;
         }
 
         internal static EvtStoryGraphModel Build(
@@ -209,8 +216,13 @@ namespace StudentAgeEditorPlus.Patches
                     : null,
                 EventConfig = eventConfig,
             };
+            context.StateEventView = IsStateEventViewConfig(eventConfig);
             EvtStoryGraphModel model = context.Model;
             model.EventId = evtId;
+            if (context.StateEventView)
+                AddDiagnostic(model,
+                    "本事件按状态演出(StateEvtView)播放：对话判断(check)不求值、"
+                    + "选项的 nextEvtId 不读取、选项分支落空时直接关闭界面。");
 
             List<int> entries = SafeCopyIds(entryTalkIds, model, "事件入口");
 
@@ -230,9 +242,24 @@ namespace StudentAgeEditorPlus.Patches
             return model;
         }
 
+        /// <summary>CommonEvtMgr 分发：type==60 或 displayType==1 走 StateEvtView。</summary>
+        private static bool IsStateEventViewConfig(EvtCfg evt)
+        {
+            try
+            {
+                return evt != null && (evt.type == 60 || evt.displayType == 1);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static void AddEventNode(BuildContext context)
         {
             var details = new List<string> { "该事件的剧情入口" };
+            if (context.StateEventView)
+                details.Add("状态演出事件(StateEvtView)");
             EvtCfg evt = context.EventConfig;
             if (evt != null)
             {
@@ -488,9 +515,22 @@ namespace StudentAgeEditorPlus.Patches
                         + talk.maxoptions + "；图中展示全部候选，游戏每次会随机显示其中 "
                         + talk.maxoptions + " 个。", 16);
                 }
-                bool optionsIntercept = !string.IsNullOrWhiteSpace(talk.content)
-                                        && hasOptionValues;
+                // StateEvtView 的透传判定是 content.IsEmpty()==IsNullOrEmpty，
+                // 纯空白正文会正常显示并停在选项处；NewTalkView（RefreshTalk）
+                // 用 IsNullOrWhiteSpace，两条路径判定不同。
+                bool contentShown = context.StateEventView
+                    ? !string.IsNullOrEmpty(talk.content)
+                    : !string.IsNullOrWhiteSpace(talk.content);
+                bool optionsIntercept = contentShown && hasOptionValues;
                 bool hasMiniGame = HasItems(talk.miniGame);
+                if (context.StateEventView && HasItems(talk.check))
+                {
+                    node.AuthorWarnings.Add(
+                        "状态演出事件不求值对话判断（check），成立/失败分支不会分流。");
+                    AddDiagnostic(context.Model,
+                        "对话 " + talk.id + " 配置了判断条件（check）；"
+                        + "状态演出事件不求值该字段，成立/失败分支不会分流。");
+                }
                 bool miniGameValid = ValidateMiniGameConfig(
                     context, node, talk.miniGame, true, "对话 " + talk.id);
                 if (hasMiniGame && miniGameValid)
@@ -565,6 +605,40 @@ namespace StudentAgeEditorPlus.Patches
             List<int> next,
             List<int> next2)
         {
+            if (context.StateEventView)
+            {
+                // StateEvtView 推进只读 nextTalk（OnClickSkip→NextTalk），
+                // check/nextTalk2 从不求值；槽位 0 不是结束而是软锁死
+                // （ShowTalk 对 talkId==0 直接 return）。
+                if (next != null && next.Count == 1 && next[0] == 0)
+                {
+                    // 单槽 [0]：AddTalkTargetList 对 0 值不画边，若无诊断该
+                    // 对话在图上会像“正常终点”，实为双性别软锁死。
+                    AddDiagnostic(context.Model,
+                        "对话 " + node.Id + " 的 nextTalk 两性共用槽为 0："
+                        + "状态演出事件没有“对话 0=结束”语义，点跳过会停在原地"
+                        + "（软锁死）。");
+                }
+                else if (next != null && next.Count > 1)
+                {
+                    for (int gender = 0; gender < 2; gender++)
+                    {
+                        if (RuntimeSlotValue(next, gender) != 0) continue;
+                        AddDiagnostic(context.Model,
+                            "对话 " + node.Id + " 的" + GenderName(gender)
+                            + " nextTalk 为 0：状态演出事件没有“对话 0=结束”语义，"
+                            + "该性别点跳过会停在原地。");
+                    }
+                }
+                AddTalkTargetList(context, node, next,
+                    EvtStoryGraphEdgeKind.NextTalk, "下一句（nextTalk）",
+                    false, false);
+                AddTalkTargetList(context, node, next2,
+                    EvtStoryGraphEdgeKind.NextTalk2, "备用分支（nextTalk2）",
+                    true, false, "状态演出事件(StateEvtView)不读取此字段");
+                return;
+            }
+
             bool conditional = HasItems(talk.check);
             DiagnoseGenderSlots(context, node, next, next2, conditional);
             AddTalkTargetList(context, node, next,
@@ -715,6 +789,32 @@ namespace StudentAgeEditorPlus.Patches
                     + evt.maxoptions + "；图中展示全部候选，但游戏每次会随机显示其中 "
                     + evt.maxoptions + " 个。", 16);
 
+            // CommonEvtMgr.ShowEvent 先判 content：为空直接走入口对话/事件效果，
+            // 事件屏被整体跳过（原版 mod 编辑器不暴露正文字段，mod 事件必然为空）；
+            // 状态演出事件更早分流到 StateEvtView，同样从不读取事件级选项。
+            string optionsNeverShownReason = null;
+            if (context.StateEventView)
+                optionsNeverShownReason = "状态演出事件(StateEvtView)不读取事件级选项";
+            else if (string.IsNullOrEmpty(evt.content))
+                optionsNeverShownReason = "事件正文为空，事件屏被跳过";
+            if (optionsNeverShownReason != null && validCount > 0)
+            {
+                EvtStoryGraphNode eventNode = context.Model.EventNode;
+                if (eventNode != null)
+                {
+                    eventNode.Flags |= EvtStoryGraphNodeFlags.InvalidData;
+                    string warning = context.StateEventView
+                        ? "状态演出事件(StateEvtView)：事件级选项在游戏中永不显示。"
+                        : "事件正文为空：事件级选项在游戏中永不显示"
+                          + "（游戏会直接进入入口对话或只执行事件效果）。";
+                    if (!eventNode.AuthorWarnings.Contains(warning))
+                        eventNode.AuthorWarnings.Add(warning);
+                }
+                AddDiagnostic(context.Model,
+                    "事件 " + context.EventId + " 配置了事件级选项，但"
+                    + optionsNeverShownReason + "，这些选项在游戏中永不显示。", 12);
+            }
+
             for (int i = 0; i < optionIds.Count; i++)
             {
                 int optionId = optionIds[i];
@@ -728,7 +828,8 @@ namespace StudentAgeEditorPlus.Patches
                     else
                         optionNode = GetEventOptionUse(context, template);
                     uses.Add(optionId, optionNode);
-                    context.OptionContextActive[optionNode] = true;
+                    context.OptionContextActive[optionNode] =
+                        optionsNeverShownReason == null;
                     context.OptionEventParents[optionNode] = evt;
                     optionNode.ParentEvent = evt;
                 }
@@ -744,10 +845,16 @@ namespace StudentAgeEditorPlus.Patches
                 if (evt.maxoptions > 0 && evt.maxoptions < validCount)
                     label += "（随机候选）";
                 EvtStoryGraphEdgeFlags flags = ReferenceFlags(optionNode);
+                if (optionsNeverShownReason != null)
+                {
+                    flags |= EvtStoryGraphEdgeFlags.RuntimeIgnored;
+                    label += "（" + optionsNeverShownReason + "，永不显示）";
+                }
                 if (optionNode.Kind == EvtStoryGraphNodeKind.MissingOption)
                 {
                     flags |= EvtStoryGraphEdgeFlags.RuntimeIgnored;
-                    label += "（配置缺失，游戏会跳过）";
+                    if (optionsNeverShownReason == null)
+                        label += "（配置缺失，游戏会跳过）";
                 }
                 AddEdge(context.Model, context.Model.EventNode, optionNode,
                     EvtStoryGraphEdgeKind.TalkOption, label, i, flags);
@@ -849,7 +956,8 @@ namespace StudentAgeEditorPlus.Patches
             EvtStoryGraphEdgeKind kind,
             string baseLabel,
             bool forceIgnored,
-            bool runtimeFallbackMode)
+            bool runtimeFallbackMode,
+            string forceIgnoredReason = null)
         {
             for (int i = 0; i < ids.Count; i++)
             {
@@ -861,7 +969,8 @@ namespace StudentAgeEditorPlus.Patches
                 if (ignored) flags |= EvtStoryGraphEdgeFlags.RuntimeIgnored;
                 string label = baseLabel + GenderSuffix(ids.Count, i);
                 if (runtimeFallbackMode) label += "（该字段不执行，改走回退分支）";
-                else if (forceIgnored) label += "（游戏中不会执行）";
+                else if (forceIgnored)
+                    label += "（" + (forceIgnoredReason ?? "游戏中不会执行") + "）";
                 else if (i >= 2) label += "（游戏只读取前两项）";
                 AddEdge(context.Model, source, target, kind, label, i, flags);
             }
@@ -925,18 +1034,34 @@ namespace StudentAgeEditorPlus.Patches
                     {
                         int gameId;
                         string gameIdError;
-                        bool successOnly = MiniGameUtil.TryGetGameId(
-                            option.miniGame, out gameId, out gameIdError) && gameId == 29;
+                        if (!MiniGameUtil.TryGetGameId(
+                                option.miniGame, out gameId, out gameIdError))
+                            gameId = 0;
+                        // 与会话预检 ValidateOptionRuntime 的豁免同源：
+                        // 29=大头贴只回调成功出口；36=谈判组队 CloseView 只读
+                        // talkId；47=漫展派对 CloseView 只关闭 NewTalkView，
+                        // talkId/talkId2 全不读，视图自行收尾。
+                        bool successIgnored = gameId == 47;
+                        bool failureIgnored = gameId == 29 || gameId == 36
+                                              || gameId == 47;
+                        string successLabel;
+                        if (gameId == 29) successLabel = "大头贴结束";
+                        else if (gameId == 47)
+                            successLabel = "talkId（漫展派对 47 自行收尾，不读取）";
+                        else successLabel = "小游戏成功";
+                        string failureLabel;
+                        if (gameId == 29) failureLabel = "talkId2（大头贴 29 不读取）";
+                        else if (gameId == 36)
+                            failureLabel = "talkId2（谈判组队 36 不读取）";
+                        else if (gameId == 47)
+                            failureLabel = "talkId2（漫展派对 47 不读取）";
+                        else failureLabel = "小游戏失败";
                         AddOptionTargetList(context, node, talkIds,
-                            EvtStoryGraphEdgeKind.OptionTalk,
-                            successOnly ? "大头贴结束" : "小游戏成功",
-                            !contextActive, false);
+                            EvtStoryGraphEdgeKind.OptionTalk, successLabel,
+                            !contextActive || successIgnored, false);
                         AddOptionTargetList(context, node, talkIds2,
-                            EvtStoryGraphEdgeKind.OptionTalk2,
-                            successOnly
-                                ? "talkId2（大头贴 29 不读取）"
-                                : "小游戏失败",
-                            !contextActive || successOnly, false);
+                            EvtStoryGraphEdgeKind.OptionTalk2, failureLabel,
+                            !contextActive || failureIgnored, false);
                     }
                     AddNextEventEdge(context, node, option.nextEvtId, true,
                         "已被选项自身的小游戏流程覆盖");
@@ -1066,12 +1191,18 @@ namespace StudentAgeEditorPlus.Patches
                               && success.Any(id => id >= minimumTargetId);
             bool hasFailure = failure != null
                               && failure.Any(id => id >= minimumTargetId);
-            bool failureOptional = !isTalk && gameId == 29;
-            if (hasSuccess && (hasFailure || failureOptional)) return;
+            // 与会话预检 ValidateOptionRuntime 对齐：47 双出口全不读、
+            // 36/29 不读失败出口（仅选项触发成立，对话侧不可照搬）。
+            bool successOptional = !isTalk && gameId == 47;
+            bool failureOptional = !isTalk
+                && (gameId == 29 || gameId == 36 || gameId == 47);
+            if ((hasSuccess || successOptional)
+                && (hasFailure || failureOptional)) return;
 
             node.Flags |= EvtStoryGraphNodeFlags.InvalidData;
             var missing = new List<string>();
-            if (!hasSuccess) missing.Add(isTalk ? "成功端口 nextTalk" : "成功端口 talkId");
+            if (!hasSuccess && !successOptional)
+                missing.Add(isTalk ? "成功端口 nextTalk" : "成功端口 talkId");
             if (!hasFailure && !failureOptional)
                 missing.Add(isTalk ? "失败端口 nextTalk2" : "失败端口 talkId2");
             AddDiagnostic(context.Model, owner + " 已配置小游戏 " + gameId
@@ -1186,13 +1317,18 @@ namespace StudentAgeEditorPlus.Patches
                 EvtStoryGraphNode target = GetTalkTarget(
                     context, source, targetId, originId);
                 EvtStoryGraphEdgeFlags flags = ReferenceFlags(target);
-                bool invalidForNormalOption = normalOptionThreshold && targetId <= 1;
+                // StateEvtView 的跳转阈值是 GetNextTalk()>0：talkId=1 会真跳转
+                // （目标缺失时 KeyNotFound 崩溃），只有非正数不会执行。
+                bool invalidForNormalOption = normalOptionThreshold
+                    && targetId <= (context.StateEventView ? 0 : 1);
                 bool ignored = forceIgnored || i >= 2 || invalidForNormalOption;
                 if (ignored) flags |= EvtStoryGraphEdgeFlags.RuntimeIgnored;
                 string label = baseLabel + GenderSuffix(ids.Count, i);
                 if (invalidForNormalOption)
                 {
-                    label += "（编号必须大于 1，当前值不会执行）";
+                    label += context.StateEventView
+                        ? "（状态演出事件编号 >0 即跳转，当前值不会执行）"
+                        : "（编号必须大于 1，当前值不会执行）";
                     source.Flags |= EvtStoryGraphNodeFlags.InvalidData;
                 }
                 else if (forceIgnored) label += "（游戏中不会执行）";
@@ -1209,6 +1345,13 @@ namespace StudentAgeEditorPlus.Patches
             string ignoredReason)
         {
             if (eventId == 0) return;
+            // StateEvtView 的选项点击流程从不读取 nextEvtId（分支落空即
+            // CloseView），统一在此覆盖所有调用点的判定。
+            if (context.StateEventView && eventId > 0)
+            {
+                forceIgnored = true;
+                ignoredReason = "状态演出事件(StateEvtView)不读取此字段";
+            }
             bool returnsToCurrent = eventId > 0 && eventId == context.EventId;
             EvtStoryGraphNode target = returnsToCurrent
                 ? context.Model.EventNode
@@ -1258,8 +1401,23 @@ namespace StudentAgeEditorPlus.Patches
             BuildContext context, List<int> entryIds, bool entriesKnown)
         {
             bool hasExplicit = entryIds.Any(id => id != 0);
+            // 正文非空且事件级选项可解析时，NewTalkView 事件屏接管流程：
+            // 继续按钮（btn_evt）隐藏，EvtCfg.talkId 不会自动播放，剧情只能
+            // 经事件级选项的跳转进入（StateEvtView 不走事件屏，不适用）。
+            EvtCfg evtCfg = context.EventConfig;
+            bool eventOptionsInterceptEntry = !context.StateEventView
+                && evtCfg != null
+                && !string.IsNullOrEmpty(evtCfg.content)
+                && evtCfg.options != null
+                && evtCfg.options.Any(id =>
+                    id != 0 && context.OptionsByKey.ContainsKey(id));
             if (hasExplicit)
             {
+                if (eventOptionsInterceptEntry)
+                    AddDiagnostic(context.Model,
+                        "事件 " + context.EventId + " 的正文非空且配置了事件级选项："
+                        + "游戏先显示事件屏，入口对话（talkId）不会自动播放，"
+                        + "只能经事件级选项进入剧情。", 14);
                 if (entryIds.Count > 1)
                 {
                     for (int gender = 0; gender < 2; gender++)
@@ -1278,9 +1436,13 @@ namespace StudentAgeEditorPlus.Patches
                         context.EventId * 1000);
                     EvtStoryGraphEdgeFlags flags = ReferenceFlags(target);
                     if (i >= 2) flags |= EvtStoryGraphEdgeFlags.RuntimeIgnored;
+                    else if (eventOptionsInterceptEntry)
+                        flags |= EvtStoryGraphEdgeFlags.RuntimeIgnored;
                     else target.Flags |= EvtStoryGraphNodeFlags.Entry;
                     string label = "事件入口" + GenderSuffix(entryIds.Count, i);
                     if (i >= 2) label += "（游戏只读取前两项）";
+                    else if (eventOptionsInterceptEntry)
+                        label += "（事件正文与事件级选项接管流程，此入口不自动播放）";
                     AddEdge(context.Model, context.Model.EventNode, target,
                         EvtStoryGraphEdgeKind.EventEntry, label, i, flags);
                 }

@@ -187,12 +187,18 @@ namespace StudentAgeEditorPlus.Patches
             };
         }
 
-        internal static int ToastSortingOrder(int storyGraphOrder)
+        /// <summary>
+        /// 图内 Toast 显示时长：4 秒起步，按文字量增加，上限 8 秒。
+        /// 中文提示阅读速度按每字约 0.05 秒补偿。
+        /// </summary>
+        internal static float ToastDurationSeconds(int messageLength)
         {
-            const int reserve = 100;
-            return storyGraphOrder > int.MaxValue - reserve
-                ? int.MaxValue
-                : storyGraphOrder + reserve;
+            const float baseSeconds = 4f;
+            const float perChar = 0.05f;
+            const float maxSeconds = 8f;
+            if (messageLength <= 0) return baseSeconds;
+            float seconds = baseSeconds + perChar * messageLength;
+            return seconds > maxSeconds ? maxSeconds : seconds;
         }
     }
 }

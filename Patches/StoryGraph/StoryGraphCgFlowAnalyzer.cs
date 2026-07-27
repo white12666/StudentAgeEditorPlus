@@ -44,22 +44,45 @@ namespace StudentAgeEditorPlus.Patches
                     || !StartsOverlay(ScreenCode(start)))
                     continue;
 
-                HashSet<EvtStoryGraphNode> endpoints = FindLeakEndpoints(start);
-                if (endpoints.Count == 0) continue;
+                var jumpOuts = new HashSet<EvtStoryGraphNode>();
+                var optionDeadEnds = new HashSet<EvtStoryGraphNode>();
+                var naturalEnds = new HashSet<EvtStoryGraphNode>();
+                CollectOverlayEndpoints(start, jumpOuts, optionDeadEnds, naturalEnds);
+
+                // 纯对话终端：链条自然结束时 NewTalkView.CloseView 销毁整个剧情
+                // 视图，CG 随之关闭，没有泄漏（原版大量 CG 事件即此形状）。只给
+                // 可选提示，不标危险红、不计入保存二次确认。
+                foreach (EvtStoryGraphNode endpoint in naturalEnds)
+                    AddAuthorWarning(
+                        endpoint,
+                        "CG 将随剧情结束自动关闭；如需提前恢复对话画面"
+                        + "可在此前加入 4017（可选）。");
+
+                if (jumpOuts.Count == 0 && optionDeadEnds.Count == 0) continue;
 
                 unclosedStarts++;
                 if (firstStartId == 0) firstStartId = start.Id;
                 MarkWarning(
                     start,
-                    "CG/漫画从这里开始，但至少一条可达分支在剧情结束或离开当前剧情图前"
-                    + "没有执行“关闭 CG（4017）”。");
-                foreach (EvtStoryGraphNode endpoint in endpoints)
+                    "CG/漫画从这里开始，但至少一条可达分支在跳出当前剧情图"
+                    + "或选项收尾前没有执行“关闭 CG（4017）”。");
+                foreach (EvtStoryGraphNode endpoint in jumpOuts)
                 {
                     if (ReferenceEquals(endpoint, start)) continue;
                     MarkWarning(
                         endpoint,
-                        "执行到这里时 CG/漫画仍处于显示状态；请在此前分支加入"
-                        + "“关闭 CG（4017）”。");
+                        "执行到这里会离开当前剧情图（跳转其它事件/跨组/引用缺失），"
+                        + "CG/漫画仍处于显示状态并会带进后续画面；"
+                        + "请在此前分支加入“关闭 CG（4017）”。");
+                }
+                foreach (EvtStoryGraphNode endpoint in optionDeadEnds)
+                {
+                    if (ReferenceEquals(endpoint, start)) continue;
+                    MarkWarning(
+                        endpoint,
+                        "这个选项收尾时没有后续剧情跳转，CG/漫画仍处于显示状态；"
+                        + "若事件队列中还有下一个事件会把画面带过去，"
+                        + "请在此前加入“关闭 CG（4017）”。");
                 }
             }
 
@@ -68,15 +91,23 @@ namespace StudentAgeEditorPlus.Patches
             {
                 model.Diagnostics.Add(
                     "检测到 " + unclosedStarts
-                    + " 个 CG/漫画开始节点存在未关闭分支；首个是对话 "
-                    + firstStartId + "。保存时会要求再次确认。");
+                    + " 个 CG/漫画开始节点存在未关闭分支（跳出剧情图或选项死端收尾）；"
+                    + "首个是对话 " + firstStartId + "。保存时会要求再次确认。");
             }
         }
 
-        private static HashSet<EvtStoryGraphNode> FindLeakEndpoints(
-            EvtStoryGraphNode start)
+        /// <summary>
+        /// 从覆盖层开始节点沿运行边遍历，把关闭前就离开覆盖层生命周期的端点分为
+        /// 三类：跳出剧情图（事件跳转/跨组/坏引用——画面带进后续剧情）、选项死端
+        /// （收尾后事件队列的下一个事件仍在同一视图播放）、纯对话自然结束
+        /// （CloseView 销毁整个视图，无泄漏）。
+        /// </summary>
+        private static void CollectOverlayEndpoints(
+            EvtStoryGraphNode start,
+            HashSet<EvtStoryGraphNode> jumpOuts,
+            HashSet<EvtStoryGraphNode> optionDeadEnds,
+            HashSet<EvtStoryGraphNode> naturalEnds)
         {
-            var endpoints = new HashSet<EvtStoryGraphNode>();
             var visited = new HashSet<EvtStoryGraphNode>();
             var queue = new Queue<EvtStoryGraphNode>();
             visited.Add(start);
@@ -94,7 +125,7 @@ namespace StudentAgeEditorPlus.Patches
 
                 if (IsBoundaryNode(current))
                 {
-                    endpoints.Add(current);
+                    jumpOuts.Add(current);
                     continue;
                 }
 
@@ -103,7 +134,13 @@ namespace StudentAgeEditorPlus.Patches
                     .ToList();
                 if (outgoing.Count == 0)
                 {
-                    endpoints.Add(current);
+                    if (current != null
+                        && current.Kind == EvtStoryGraphNodeKind.Option)
+                        optionDeadEnds.Add(current);
+                    else if (IsTalk(current))
+                        naturalEnds.Add(current);
+                    else
+                        jumpOuts.Add(current);
                     continue;
                 }
 
@@ -117,7 +154,7 @@ namespace StudentAgeEditorPlus.Patches
                         || IsBoundaryNode(target);
                     if (leavesGraph)
                     {
-                        endpoints.Add(target ?? current);
+                        jumpOuts.Add(target ?? current);
                         continue;
                     }
 
@@ -129,7 +166,6 @@ namespace StudentAgeEditorPlus.Patches
                     if (visited.Add(target)) queue.Enqueue(target);
                 }
             }
-            return endpoints;
         }
 
         private static bool IsTalk(EvtStoryGraphNode node)
