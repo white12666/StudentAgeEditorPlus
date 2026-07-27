@@ -7,6 +7,7 @@ using Config;
 using HarmonyLib;
 using Newtonsoft.Json;
 using Sdk;
+using StudentAgeTypeset.Latex;
 using View.Mod;
 
 namespace StudentAgeEditorPlus.Patches
@@ -221,6 +222,11 @@ namespace StudentAgeEditorPlus.Patches
                     talks, options, removedTalkIds, removedOptionIds);
                 RememberExpectedCurrent(
                     baseline, talks, options, eventId, entries, entriesKnown, modRoot);
+                // 设计 §4 的 GC 第二层（D6-3 / LTX-D1-05）：删除已提交后清掉这些对话的
+                // 边车登记并回收公式资产。放在提交点之后、best-effort：失败只警告，
+                // 绝不把一次已成功的删除判成失败。
+                LatexDeletionGc.AfterOrdinaryDelete(
+                    modRoot, eventId, removedTalkIds, talks);
                 string message = "已永久删除 " + removedTalkIds.Count + " 个对话和 "
                                + removedOptionIds.Count + " 个选项，并安全断开当前事件内引用。";
                 Plugin.Log?.LogInfo("[EvtDeletePersistence] " + message);
@@ -362,9 +368,40 @@ namespace StudentAgeEditorPlus.Patches
     [HarmonyPatch(typeof(ModEvtEditView), "OnClickSave")]
     internal static class ModEvtDeleteSavePatch
     {
-        private static void Prefix(ModEvtEditView __instance)
+        private static bool Prefix(ModEvtEditView __instance)
         {
+            // 事务日志滞留期间，原版全量保存会改写两份配置并破坏日志指纹，
+            // 使自动恢复永久失败（配置被判定为外部修改而锁死）。此时必须整体
+            // 拦下普通保存；守卫自身异常则放行（无法判定时不阻塞正常使用）。
+            try
+            {
+                string modRoot;
+                string error;
+                if (EvtStoryGraphViewAccess.TryGetModRoot(
+                        __instance, out modRoot, out error)
+                    && StoryGraphEditPersistence.HasPendingTransaction(modRoot))
+                {
+                    string message = "存在未完成的剧情图保存事务，已阻止普通保存以免破坏自动恢复；"
+                                   + "请关闭并重新打开事件完成恢复后再保存。";
+                    Plugin.Log?.LogWarning("[EvtDeletePersistence] " + message);
+                    try { ToastHelper.Toast(message); }
+                    catch { }
+                    return false;
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log?.LogError("[EvtDeletePersistence.SaveGuard] " + e);
+            }
+
+            // 保底烘焙只在放行路径上做（设计 §6.2）：上面的日志滞留守卫返回 false
+            // 时保存并未发生，此刻改内存等于把作者的 $ 原文无声换成烘焙文本。
+            // 必须排在 BeforeOrdinarySave 之前——后者的删除事务会克隆同一批
+            // talk 对象写盘，先烘焙才能保证两条写盘路径内容一致。
+            if (!LatexVanillaSaveBake.TryBakeBeforeSave(__instance)) return false;
+
             ModEvtDeletePersistence.BeforeOrdinarySave(__instance);
+            return true;
         }
     }
 }

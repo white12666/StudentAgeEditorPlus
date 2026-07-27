@@ -65,9 +65,6 @@ namespace StudentAgeEditorPlus.Patches
                             // pending 的删除是提交点。它之前若强退，下次会回滚旧文件；
                             // 它之后只剩无害的事务残留，可在下次保存时清理。
                             File.Delete(pending);
-                            CleanupOrphans(firstPath, secondPath);
-                            lockStream.Flush(true);
-                            return true;
                         }
                         catch
                         {
@@ -75,6 +72,23 @@ namespace StudentAgeEditorPlus.Patches
                                 throw new IOException("保存失败且自动回滚未完成：" + rollbackError);
                             throw;
                         }
+
+                        // 提交点已过：残留清理与锁刷盘只能 best-effort。任何失败都
+                        // 不得把一次已完整落盘的成对提交误报成保存失败——与剧情图
+                        // TrySave 的 committedOnDisk 纪律一致；孤儿会在下次保存清理。
+                        try
+                        {
+                            CleanupOrphans(firstPath, secondPath);
+                            lockStream.Flush(true);
+                        }
+                        catch (Exception cleanupError)
+                        {
+                            Plugin.Log?.LogWarning(
+                                "[AtomicFilePair] 人物成对保存已完整提交，"
+                                + "但清理事务残留失败（下次保存会重试）："
+                                + cleanupError.Message);
+                        }
+                        return true;
                     }
                 }
             }
