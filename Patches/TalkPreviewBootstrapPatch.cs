@@ -181,7 +181,9 @@ namespace StudentAgeEditorPlus.Patches
                             .GetValue(screen.OverlayId, screen.ComicPage, continueShow);
                         return false;
                     case TalkPreviewOverlayKind.MiniCg:
-                        ShowMiniCg(view, screen.OverlayId, continueShow);
+                        // 缺号时不显示 MiniCG，但状态恢复必须继续走下去。
+                        if (!ShowMiniCg(view, screen.OverlayId, continueShow))
+                            continueShow();
                         return false;
                     default:
                         return true;
@@ -513,12 +515,33 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        internal static void ShowMiniCg(
+        /// <summary>
+        /// 返回 false 表示该 MiniCG 编号不在预览用的 CG 表里，本次什么都没做。
+        /// 必须在任何隐藏/激活副作用之前判定：CGView.Refresh 用的是裸索引器
+        /// cgCfgMap[_id].GetImgUrl()（CGView.cs:70-72），缺号直接
+        /// KeyNotFoundException，而此时 isShowingCG/group_role/root_cg 已经被改过，
+        /// 预览就永久停在半开黑框态（L3-2；作者手填错 4019 参数同理）。
+        /// </summary>
+        internal static bool ShowMiniCg(
             PreviewTalkView view,
             int cgId,
             Action callback)
         {
             var t = Traverse.Create(view);
+            var cgCfgMap = t.Field("cgCfgMap").GetValue<Dictionary<int, CGCfg>>();
+            if (cgCfgMap == null || !cgCfgMap.ContainsKey(cgId))
+            {
+                Plugin.Log.LogWarning(
+                    $"[PreviewTalk.4019] MiniCG 编号 {cgId} 不在预览配置表中，已跳过。");
+                try
+                {
+                    StoryGraphToastRouter.Show(
+                        "MiniCG 编号 " + cgId + " 不在当前预览的 CG 配置表中，已跳过该画面指令"
+                        + "（新增的 CG 请先保存一次；手填的 4019 请核对编号）。");
+                }
+                catch { }
+                return false;
+            }
             t.Field("isShowingCG").SetValue(true);
             view.canvasgroup_cg.DOKill();
             view.canvasgroup_cg.alpha = 1f;
@@ -553,9 +576,9 @@ namespace StudentAgeEditorPlus.Patches
                 initialized(panel);
             }
 
-            var cgMap = t.Field("cgCfgMap").GetValue<Dictionary<int, CGCfg>>();
-            panel.parms = new object[3] { cgId, cgMap, 1 };
+            panel.parms = new object[3] { cgId, cgCfgMap, 1 };
             panel.Show();
+            return true;
         }
     }
 
@@ -877,10 +900,11 @@ namespace StudentAgeEditorPlus.Patches
                     return true;
                 }
                 if (code != 4019) return true;
-                if (cfg.screenEffect.Count > 1)
-                    TalkPreviewBootstrapRuntime.ShowMiniCg(
-                        __instance, (int)cfg.screenEffect[1], _callback);
-                else
+                // 缺号/参数缺失都降级成「不显示 MiniCG，照常走文本流程」：原版
+                // PlayScreenEffect 没有 4019 分支，放行它不会有任何补救动作。
+                if (cfg.screenEffect.Count <= 1
+                    || !TalkPreviewBootstrapRuntime.ShowMiniCg(
+                        __instance, (int)cfg.screenEffect[1], _callback))
                     _callback?.Invoke();
                 return false;
             }

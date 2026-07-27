@@ -1458,9 +1458,11 @@ namespace StudentAgeEditorPlus.Patches
         {
             try
             {
+                // 失败提示统一走路由：从剧情图进入预览时画布刚被暂隐、
+                // 失败后立即恢复，原版 Toast 会被重新盖住看不见。
                 if (view == null)
                 {
-                    ToastHelper.Toast("事件编辑器已关闭，无法预览本句");
+                    StoryGraphToastRouter.Show("事件编辑器已关闭，无法预览本句");
                     return false;
                 }
 
@@ -1472,7 +1474,7 @@ namespace StudentAgeEditorPlus.Patches
                     talkList, requestedTalk);
                 if (!string.IsNullOrEmpty(validation))
                 {
-                    ToastHelper.Toast(validation);
+                    StoryGraphToastRouter.Show(validation);
                     return false;
                 }
 
@@ -1494,21 +1496,27 @@ namespace StudentAgeEditorPlus.Patches
                 if (HasReachableEmptyTalkCycle(
                         talkMap, optionMap, requestedTalk.id))
                 {
-                    ToastHelper.Toast("当前对话后方存在空白对话循环，原预览器会同步递归直至崩溃；请先修正跳转关系");
+                    StoryGraphToastRouter.Show("当前对话后方存在空白对话循环，原预览器会同步递归直至崩溃；请先修正跳转关系");
                     return false;
                 }
 
                 var personMap = t.Field("personCfgs").GetValue<Dictionary<int, PersonCfg>>(); // 已含原版
                 var bgMap = Merge(t.Field("customBgCfgs").GetValue<Dictionary<int, BgCfg>>(), Cfg.BgCfgMap);
-                var cgMap = Merge(t.Field("customCGCfgs").GetValue<Dictionary<int, CGCfg>>(), Cfg.CGCfgMap);
-
-                // audioCfgs 懒加载，先确保加载（内部已含原版合并）
-                t.Method("LoadAudioCfg").GetValue();
-                var audioMap = t.Field("audioCfgs").GetValue<Dictionary<int, AudioCfg>>();
 
                 int gradeState = t.Field("gradeState").GetValue<int>();
                 var gender = t.Field("gender").GetValue<GenderDefine>();
                 string modRoot = t.Field("modRoot").GetValue<string>();
+
+                // CG 表必须每次从磁盘重读（与 faces/items/books 同口径）：
+                // customCGCfgs 是事件打开那一刻的一次性快照（ModEvtEditView.cs:161），
+                // Cfg.CGCfgMap 是启动快照，本次会话里新增的 cgId 未必在这两张表
+                // 里——用它们做预览，CGView.Refresh 的裸索引器
+                // cgCfgMap[_id] 必抛 KeyNotFoundException，预览停在半开黑框态（L3-2）。
+                var cgMap = EvtPreviewConfigLoader.LoadCgs(modRoot);
+
+                // audioCfgs 懒加载，先确保加载（内部已含原版合并）
+                t.Method("LoadAudioCfg").GetValue();
+                var audioMap = t.Field("audioCfgs").GetValue<Dictionary<int, AudioCfg>>();
 
                 // 必须与 ModPreviewTipsView.OnClickOK 一样传满 12 项。尤其第 10 项
                 // ModFaceCfg 决定图片型人物的 3000 自定义表情；若省略，只会回退
@@ -1522,7 +1530,7 @@ namespace StudentAgeEditorPlus.Patches
                 {
                     // PreviewTalkView.OnOpen 原版把 item/book 的空值判断误写成
                     // faceCfgMap.IsEmpty()：当游戏与当前 Mod 都没有表情表时，它会
-                    // 丢弃已经传入的 item/book。放入绝不可能与合法人物公式键冲突
+                    // 丢弃已经传入的 item/book。放入绝不可能与合法表情编号冲突
                     // 的内部哨兵，只修正该错误分支；表情查找不会命中它。
                     faceMap[int.MinValue] = new ModFaceCfg { id = int.MinValue };
                 }
@@ -1539,7 +1547,7 @@ namespace StudentAgeEditorPlus.Patches
                     TalkPreviewPlaybackMode.Preview, audioMap, bgMap);
                 if (!startSnapshot.Reliable)
                 {
-                    ToastHelper.Toast(
+                    StoryGraphToastRouter.Show(
                         "当前对话的前驱存在循环，无法唯一恢复执行前状态；请先修正跳转或使用完整剧情预览");
                     return false;
                 }
@@ -1547,7 +1555,7 @@ namespace StudentAgeEditorPlus.Patches
                 {
                     // 分支合流没有运行时选项记录，任意选择一个前驱都可能让人物/
                     // CG 状态来自错误分支。宁可阻止，也不展示看似正常的错误预览。
-                    ToastHelper.Toast(
+                    StoryGraphToastRouter.Show(
                         "当前对话存在多个前驱，无法判断要恢复哪条分支；请从完整剧情预览进入该分支");
                     return false;
                 }
@@ -1577,7 +1585,7 @@ namespace StudentAgeEditorPlus.Patches
             catch (Exception e)
             {
                 Plugin.Log.LogError($"[EvtTalkPreview] {e}");
-                try { ToastHelper.Toast("预览本句打开失败；请查看 BepInEx 日志"); }
+                try { StoryGraphToastRouter.Show("预览本句打开失败；请查看 BepInEx 日志"); }
                 catch { }
                 return false;
             }

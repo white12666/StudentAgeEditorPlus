@@ -19,8 +19,10 @@ namespace StudentAgeEditorPlus.Patches
     /// ResetForViewOpen，由 EvtStoryGraphInitPatch / EvtStoryGraphOpenPatch 调用）。
     ///
     /// 全部界面用代码构建，不依赖任何 prefab；组件挂在 ModEvtEditView 根上，
-    /// 自建 Canvas（ScreenSpaceOverlay + overrideSorting）必须保持为场景顶层对象；
-    /// 排序放在游戏 Foreground 层正下方，让 Toast 等全局提示仍能显示在剧情图之上。
+    /// 自建 Canvas（ScreenSpaceOverlay + overrideSorting）必须保持为场景顶层对象。
+    /// 注意：游戏根 Canvas 是 ScreenSpaceCamera，Overlay 永远渲染在它之上，
+    /// 原版 ToastView 等全局提示会被剧情图盖住——提示改由图内 Toast 显示
+    /// （StoryGraphToastRouter + TryShowGraphToast）。
     /// Unity 明确不支持把 Overlay Canvas 嵌在其他 UI 下；生命周期仍由本组件显式管理。
     /// 不用 IMGUI，不用静态字段持有 Unity 对象。
     ///
@@ -127,6 +129,17 @@ namespace StudentAgeEditorPlus.Patches
         private float _zoom = 1f;
         private bool _pendingInitialCenter;   // 打开后等待视口尺寸有效再居中
         private bool _previewSuspended;       // 预览本句期间隐藏顶层剧情图，但保留草稿
+
+        // 图内 Toast：游戏根 Canvas 是 ScreenSpaceCamera，剧情图是
+        // ScreenSpaceOverlay，Overlay 永远渲染在相机空间画布之上，原版
+        // ToastView 会被剧情图整体盖住，提示必须画在剧情图自己的画布上
+        // （路由见 StoryGraphToastRouter）。
+        private RectTransform _graphToastRoot;
+        private Text _graphToastLabel;
+        private CanvasGroup _graphToastGroup;
+        private float _graphToastUntil;
+        private string _pendingGraphToast;    // 预览本句暂隐画布期间积压的最新一条
+        private Func<string, bool> _graphToastSink;
         private bool _panning;
         private ButtonControl _panButton;     // 平移按住的鼠标键（新输入系统）
         private Vector2 _lastPanPoint;
@@ -502,7 +515,7 @@ namespace StudentAgeEditorPlus.Patches
                 {
                     Plugin.Log?.LogError("[StoryGraph.Open.Cleanup] " + cleanupError);
                 }
-                try { ToastHelper.Toast("剧情图打开失败，已自动关闭；请查看 BepInEx 日志。"); }
+                try { StoryGraphToastRouter.Show("剧情图打开失败，已自动关闭；请查看 BepInEx 日志。"); }
                 catch { /* Toast 失败也不能妨碍遮罩回滚。 */ }
             }
         }
@@ -513,7 +526,9 @@ namespace StudentAgeEditorPlus.Patches
             // RequestClose，在这里不再弹确认，避免 OnDisable 时留下全屏遮罩。
             CloseInspectorResourcePicker();
             StoryGraphPreviewReturnBridge.Forget(this);
-            StoryGraphToastLayerBridge.Deactivate();
+            if (_graphToastSink != null)
+                StoryGraphToastRouter.Unregister(_graphToastSink);
+            _pendingGraphToast = null;
             CancelConnectionDrag();
             _boxSelection = null;
             _open = false;
@@ -568,6 +583,10 @@ namespace StudentAgeEditorPlus.Patches
             _nextMatchButton = null;
             _edgeLabelModeButton = null;
             _matchCounterText = null;
+            _graphToastRoot = null;
+            _graphToastLabel = null;
+            _graphToastGroup = null;
+            _graphToastUntil = 0f;
             _font = null;
             _viewToolbarGroup = null;
             _editToolbarGroup = null;
@@ -648,6 +667,8 @@ namespace StudentAgeEditorPlus.Patches
             HideTooltip();
             _panning = false;
             _panButton = null;
+            // 预览结束后画布重新激活时，不让预览前的旧提示原样闪回。
+            HideGraphToastNow();
             _previewSuspended = true;
             if (EventSystem.current != null)
                 EventSystem.current.SetSelectedGameObject(null);
@@ -671,6 +692,8 @@ namespace StudentAgeEditorPlus.Patches
             RefreshAllNodeStates();
             UpdateMinimapDots();
             UpdateMinimapFrame();
+            // 预览打开失败等在画布暂隐期间产生的提示，此刻补发到图内。
+            FlushPendingGraphToast();
         }
 
         private void OnDisable()
@@ -683,7 +706,9 @@ namespace StudentAgeEditorPlus.Patches
         {
             // Overlay Canvas 是场景顶层对象，不会随编辑器根自动销毁；
             // OnDisable 正常会先 Close，这里再做一次最终兜底。
-            StoryGraphToastLayerBridge.Deactivate();
+            if (_graphToastSink != null)
+                StoryGraphToastRouter.Unregister(_graphToastSink);
+            _pendingGraphToast = null;
             StoryGraphPreviewReturnBridge.Forget(this);
             if (_canvasRoot != null)
                 UnityEngine.Object.Destroy(_canvasRoot);
@@ -703,6 +728,10 @@ namespace StudentAgeEditorPlus.Patches
             _nextMatchButton = null;
             _edgeLabelModeButton = null;
             _matchCounterText = null;
+            _graphToastRoot = null;
+            _graphToastLabel = null;
+            _graphToastGroup = null;
+            _graphToastUntil = 0f;
             _font = null;
             _viewToolbarGroup = null;
             _editToolbarGroup = null;
@@ -805,6 +834,7 @@ namespace StudentAgeEditorPlus.Patches
             {
                 WatchScreenResize();
                 UpdateEditConfirmationState();
+                UpdateGraphToast();
             }
             catch (Exception e) { LogInputErrorThrottled(e); }
             if (!_open || _canvasRoot == null) return;
@@ -1884,7 +1914,12 @@ namespace StudentAgeEditorPlus.Patches
 
             var scaler = _canvasRoot.GetComponent<CanvasScaler>();
             ConfigureCanvasScaling(canvas, scaler);
-            StoryGraphToastLayerBridge.Activate(canvas);
+            if (_graphToastSink == null) _graphToastSink = TryShowGraphToast;
+            StoryGraphToastRouter.Register(_graphToastSink);
+            // 打开剧情图的那次点击可能在 pointer-down 阶段先触发输入框
+            // onEndEdit 的校验提示（早于此处注册），把 1.5 秒内被回落的
+            // 最后一条补发到图内，否则它会被 Overlay 盖住整个生命周期。
+            StoryGraphToastRouter.ReplayRecentFallback(1.5f);
             // 先让根 Canvas 得到正确逻辑尺寸，工具栏才能按实际可用宽度自适应。
             Canvas.ForceUpdateCanvases();
 
@@ -1923,9 +1958,9 @@ namespace StudentAgeEditorPlus.Patches
         {
             try
             {
-                // ToastView 常驻 UILayerType.Foreground。剧情图仍高于 Normal 层的
-                // 事件编辑器，但必须给 Foreground 留出一个排序位，否则提示会在
-                // 剧情图关闭后才一起露出来。
+                // 排序只在 Overlay 画布之间比较（例如游戏的 Blocker=29999）；
+                // 相机空间的游戏 UI 与 ToastView 永远在 Overlay 之下，与该值
+                // 无关。取 Foreground-1 仅为与游戏语义保持可读的相对位置。
                 int foregroundOrder =
                     UIMgr.GetLayerSortingOrder(UILayerType.Foreground);
                 if (foregroundOrder > int.MinValue)
@@ -3053,6 +3088,142 @@ namespace StudentAgeEditorPlus.Patches
             return visual;
         }
 
+        // ==================== 图内 Toast ====================
+        // 游戏根 Canvas 是 ScreenSpaceCamera，剧情图是 ScreenSpaceOverlay；
+        // Overlay 永远渲染在相机空间画布之上，原版 ToastView 无论把
+        // sortingOrder 提到多高都会被剧情图盖住，所以提示画在图画布上。
+
+        private const float GraphToastFadeSeconds = 0.35f;
+
+        /// <summary>StoryGraphToastRouter 的回调：true 表示消息已由剧情图接管。</summary>
+        private bool TryShowGraphToast(string message)
+        {
+            if (!_open || _canvasRoot == null) return false;
+            if (_previewSuspended)
+            {
+                // 预览本句期间画布整体隐藏；只积压最新一条，恢复显示时补发。
+                _pendingGraphToast = message;
+                return true;
+            }
+            return ShowGraphToastNow(message);
+        }
+
+        private bool ShowGraphToastNow(string message)
+        {
+            if (_canvasRoot == null || _font == null) return false;
+            if (_graphToastRoot == null) BuildGraphToast();
+            if (_graphToastRoot == null || _graphToastLabel == null) return false;
+            _graphToastLabel.text = message;
+            // 宽度随文字收缩；到上限后换行，高度由 ContentSizeFitter 自适应。
+            // 检查器可见时（与视口压缩同一条件）在图区内居中并让出右侧
+            // InspectorWidth，窄逻辑画布下不会压住检查器标题区。
+            float canvasWidth = _canvasRect != null && _canvasRect.rect.width > 0f
+                ? _canvasRect.rect.width
+                : 1280f;
+            float reserved = _editMode && _inspectorVisible ? InspectorWidth : 0f;
+            float cap = Mathf.Min(760f,
+                Mathf.Max(240f, canvasWidth - reserved - 80f));
+            float preferred = _graphToastLabel.preferredWidth + 36f;
+            _graphToastRoot.anchoredPosition =
+                new Vector2(-reserved * 0.5f, -(ToolbarHeight + 16f));
+            _graphToastRoot.sizeDelta = new Vector2(
+                Mathf.Clamp(preferred, 240f, cap), _graphToastRoot.sizeDelta.y);
+            _graphToastUntil = Time.unscaledTime
+                + StoryGraphResourcePickerLogic.ToastDurationSeconds(
+                    message != null ? message.Length : 0);
+            if (_graphToastGroup != null) _graphToastGroup.alpha = 1f;
+            _graphToastRoot.SetAsLastSibling();
+            _graphToastRoot.gameObject.SetActive(true);
+            return true;
+        }
+
+        private void BuildGraphToast()
+        {
+            GameObject root = CreateUIObject("GraphToast", _canvasRoot.transform);
+            _graphToastRoot = (RectTransform)root.transform;
+            _graphToastRoot.anchorMin = new Vector2(0.5f, 1f);
+            _graphToastRoot.anchorMax = new Vector2(0.5f, 1f);
+            _graphToastRoot.pivot = new Vector2(0.5f, 1f);
+            _graphToastRoot.anchoredPosition =
+                new Vector2(0f, -(ToolbarHeight + 16f));
+            _graphToastRoot.sizeDelta = new Vector2(240f, 48f);
+
+            var bg = root.AddComponent<Image>();
+            bg.color = PanelBorder;
+            // 提示永不拦截画布输入。
+            bg.raycastTarget = false;
+            ApplySprite(bg, _roundedSprite);
+
+            GameObject fillGo = CreateUIObject("Fill", root.transform);
+            var fillRt = (RectTransform)fillGo.transform;
+            fillRt.anchorMin = Vector2.zero;
+            fillRt.anchorMax = Vector2.one;
+            fillRt.offsetMin = new Vector2(1f, 1f);
+            fillRt.offsetMax = new Vector2(-1f, -1f);
+            var fillImg = fillGo.AddComponent<Image>();
+            fillImg.color = PanelBg;
+            fillImg.raycastTarget = false;
+            ApplySprite(fillImg, _roundedSprite);
+            var fillLayout = fillGo.AddComponent<LayoutElement>();
+            fillLayout.ignoreLayout = true;
+
+            _graphToastGroup = root.AddComponent<CanvasGroup>();
+            _graphToastGroup.interactable = false;
+            _graphToastGroup.blocksRaycasts = false;
+
+            var layout = root.AddComponent<VerticalLayoutGroup>();
+            layout.padding = new RectOffset(16, 16, 10, 10);
+            layout.childControlWidth = true;
+            layout.childControlHeight = true;
+            layout.childForceExpandWidth = true;
+            layout.childForceExpandHeight = false;
+
+            var fitter = root.AddComponent<ContentSizeFitter>();
+            fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            _graphToastLabel = CreateText(root, "Label", SecondaryFontSize,
+                FontStyle.Bold, TitleColor, TextAnchor.MiddleCenter);
+            root.SetActive(false);
+        }
+
+        private void UpdateGraphToast()
+        {
+            if (_graphToastRoot == null || !_graphToastRoot.gameObject.activeSelf)
+                return;
+            float remain = _graphToastUntil - Time.unscaledTime;
+            if (remain <= 0f)
+            {
+                _graphToastRoot.gameObject.SetActive(false);
+                return;
+            }
+            if (_graphToastGroup != null)
+                _graphToastGroup.alpha = remain < GraphToastFadeSeconds
+                    ? remain / GraphToastFadeSeconds
+                    : 1f;
+        }
+
+        private void HideGraphToastNow()
+        {
+            _graphToastUntil = 0f;
+            if (_graphToastRoot != null)
+                _graphToastRoot.gameObject.SetActive(false);
+        }
+
+        private void FlushPendingGraphToast()
+        {
+            string pending = _pendingGraphToast;
+            _pendingGraphToast = null;
+            if (string.IsNullOrEmpty(pending)) return;
+            if (!ShowGraphToastNow(pending))
+            {
+                // 图内补发失败时消息先落日志再回落原版 Toast——此时 Overlay
+                // 仍在，原版 Toast 大概率看不见，日志是最后的痕迹。
+                Plugin.Log?.LogInfo("[StoryGraph.Toast] " + pending);
+                try { ToastHelper.Toast(pending); }
+                catch { }
+            }
+        }
+
         // ==================== UGUI 小工厂 ====================
 
         private static GameObject CreateUIObject(string name, Transform parent)
@@ -3478,12 +3649,15 @@ namespace StudentAgeEditorPlus.Patches
             return null;
         }
 
-        private void MergeReferencedOptionsForSnapshot(
+        /// <summary>返回本次实际补进 options 字典的选项编号；进入编辑模式时
+        /// 交给会话作为“借来显示”的冻结集合，避免本体共享选项被写进 Mod。</summary>
+        private HashSet<int> MergeReferencedOptionsForSnapshot(
             IDictionary<int, OptionCfg> options,
             EvtCfg eventConfig,
             IEnumerable<TalkCfg> talks)
         {
-            if (options == null) return;
+            var mergedIds = new HashSet<int>();
+            if (options == null) return mergedIds;
             var referencedIds = new HashSet<int>();
             if (eventConfig != null && eventConfig.options != null)
                 referencedIds.UnionWith(eventConfig.options);
@@ -3497,7 +3671,7 @@ namespace StudentAgeEditorPlus.Patches
             // 配置覆盖；只补齐原编辑器会从 Cfg.OptionCfgMap 回退读取的缺项。
             referencedIds.RemoveWhere(id =>
                 id <= 0 || options.ContainsKey(id));
-            if (referencedIds.Count == 0) return;
+            if (referencedIds.Count == 0) return mergedIds;
 
             string modRoot = null;
             string ignored;
@@ -3507,6 +3681,9 @@ namespace StudentAgeEditorPlus.Patches
             if (!StoryGraphEditPersistence.TryMergeReferencedOptions(
                     modRoot, referencedIds, options, out error))
                 Plugin.Log?.LogWarning("[StoryGraph] " + error);
+            foreach (int id in referencedIds)
+                if (options.ContainsKey(id)) mergedIds.Add(id);
+            return mergedIds;
         }
 
         private void EnsureWorkspace(int eventId)
@@ -5982,6 +6159,9 @@ namespace StudentAgeEditorPlus.Patches
             if (node.IsSegment || node.IsUnusedGroup) return true;
             // 入口与结束只是常规流程标记；只有异常、跨组等状态才需要解释。
             if ((node.Flags & TooltipAttentionFlags) != 0) return true;
+            // 作者提示（如 CG 自然结束的可选 4017 建议）不设旗标也要能看到。
+            if (node.SourceNode != null
+                && node.SourceNode.AuthorWarnings.Count > 0) return true;
 
             NodeVisual nv;
             if (_nodeLookup.TryGetValue(node, out nv) && nv != null
@@ -6213,7 +6393,7 @@ namespace StudentAgeEditorPlus.Patches
             if (!_open || _previewSuspended) return;
             if (talk == null)
             {
-                try { ToastHelper.Toast("请先选择一个真实对话节点"); }
+                try { StoryGraphToastRouter.Show("请先选择一个真实对话节点"); }
                 catch { }
                 return;
             }
@@ -6221,7 +6401,7 @@ namespace StudentAgeEditorPlus.Patches
             {
                 try
                 {
-                    ToastHelper.Toast(
+                    StoryGraphToastRouter.Show(
                         "当前对话内容为空，会被预览器直接跳过；请选择一条有正文的对话预览");
                 }
                 catch { }
@@ -6317,14 +6497,14 @@ namespace StudentAgeEditorPlus.Patches
             StoryGraphDisplayNode target = RevealEditorFocusForExistingLayout();
             if (target == null)
             {
-                try { ToastHelper.Toast("原编辑器当前没有可定位的对话或选项"); }
+                try { StoryGraphToastRouter.Show("原编辑器当前没有可定位的对话或选项"); }
                 catch { }
                 return;
             }
             FocusViewNode(target, true);
             try
             {
-                ToastHelper.Toast(_editorFocusOption != null
+                StoryGraphToastRouter.Show(_editorFocusOption != null
                     ? "已定位到选项 " + _editorFocusOption.id
                     : "已定位到对话 " + _editorFocusTalk.id);
             }
@@ -6358,7 +6538,7 @@ namespace StudentAgeEditorPlus.Patches
                 return;
             if (_workspace == null)
             {
-                try { ToastHelper.Toast("作者工作区尚未初始化，无法保存自动布局"); }
+                try { StoryGraphToastRouter.Show("作者工作区尚未初始化，无法保存自动布局"); }
                 catch { }
                 return;
             }
@@ -6381,12 +6561,12 @@ namespace StudentAgeEditorPlus.Patches
                     _workspace.Restore(before, beforeDirty);
                     _layout = previous;
                     RebuildVisuals();
-                    try { ToastHelper.Toast(error + "；自动整理已回滚"); }
+                    try { StoryGraphToastRouter.Show(error + "；自动整理已回滚"); }
                     catch { }
                     return;
                 }
                 FitToView();
-                try { ToastHelper.Toast("已自动整理并保存作者工作区布局"); }
+                try { StoryGraphToastRouter.Show("已自动整理并保存作者工作区布局"); }
                 catch { }
             }
             catch (Exception e)
@@ -6396,7 +6576,7 @@ namespace StudentAgeEditorPlus.Patches
                 try { RebuildVisuals(); }
                 catch { }
                 Plugin.Log?.LogError("[StoryGraph.View.Arrange] " + e);
-                try { ToastHelper.Toast("自动整理失败；布局已回滚，剧情数据未改变"); }
+                try { StoryGraphToastRouter.Show("自动整理失败；布局已回滚，剧情数据未改变"); }
                 catch { }
             }
         }
@@ -6560,9 +6740,16 @@ namespace StudentAgeEditorPlus.Patches
 
         // ==================== 可视化编辑 ====================
 
+        /// <summary>剧情草稿是否有未保存改动。</summary>
+        private bool HasUnsavedGraphChanges()
+        {
+            if (_editSession == null) return false;
+            return _editSession.Dirty;
+        }
+
         private void RequestClose()
         {
-            if (_editMode && _editSession != null && _editSession.Dirty)
+            if (_editMode && _editSession != null && HasUnsavedGraphChanges())
             {
                 SetEditFeedback(
                     "有未保存的剧情图修改。请先点“保存”，或连续两次点“放弃”后再关闭。", true);
@@ -6586,9 +6773,15 @@ namespace StudentAgeEditorPlus.Patches
             }
             if (StoryGraphEditPersistence.HasPendingTransaction(modRoot))
             {
+                bool quarantined;
                 if (!StoryGraphEditPersistence.TryRecoverPendingTransaction(
-                        modRoot, out error))
+                        modRoot, out quarantined, out error))
                     SetEditFeedback(error, true);
+                else if (quarantined)
+                    // 隔离放行什么都没恢复，磁盘保持现状（可能含会话外改动），
+                    // 不能与下面的“已恢复”共用文案误导用户跳过检查。
+                    SetEditFeedback(
+                        "旧保存事务无法自动恢复，已隔离放行；当前文件保持现状，请核对配置内容后再编辑。备份位置见日志。", true);
                 else
                     SetEditFeedback(
                         "已恢复上次强退留下的保存事务。当前事件是在恢复前加载的，请关闭并重新打开事件后再编辑。", true);
@@ -6607,13 +6800,19 @@ namespace StudentAgeEditorPlus.Patches
                 SetEditFeedback(error ?? "无法读取事件数据，不能进入编辑模式。", true);
                 return;
             }
-            MergeReferencedOptionsForSnapshot(
+            HashSet<int> mergedOptionIds = MergeReferencedOptionsForSnapshot(
                 options, SnapshotEventConfiguration(eventId), talks);
 
             try
             {
+                // 快照容器持有原编辑器实时对象引用，先深拷贝隔离，绝不改写编辑器
+                // 内存；会话随后照常再克隆一次。选项同理，而且更严格——合并进来的
+                // 共享选项直接来自全局 Cfg.OptionCfgMap，就地改写等于污染本局全局配置。
+                talks = StoryGraphEditSession.CloneTalks(talks);
+                options = StoryGraphEditSession.CloneOptions(options);
                 _editSession = new StoryGraphEditSession(
-                    talks, options, eventId, entries, entriesKnown, modRoot);
+                    talks, options, eventId, entries, entriesKnown, modRoot,
+                    mergedOptionIds);
                 // 每次进入都是全新的深拷贝草稿；旧会话的统一时间线绝不能
                 // 复用，否则放弃后重进会把 Ctrl+Z 指向已销毁的 session。
                 ClearEditHistories();
@@ -6653,7 +6852,7 @@ namespace StudentAgeEditorPlus.Patches
         private void RequestExitEditMode()
         {
             if (!_editMode) return;
-            if (_editSession != null && _editSession.Dirty)
+            if (_editSession != null && HasUnsavedGraphChanges())
             {
                 SetEditFeedback(
                     "草稿尚未保存。请先保存，或连续两次点击“放弃”退出编辑模式。", true);
@@ -6665,7 +6864,7 @@ namespace StudentAgeEditorPlus.Patches
         private void RequestDiscardEdit()
         {
             if (!_editMode || _editSession == null) return;
-            if (!_editSession.Dirty)
+            if (!HasUnsavedGraphChanges())
             {
                 ExitEditMode(false);
                 return;
@@ -6678,7 +6877,7 @@ namespace StudentAgeEditorPlus.Patches
                 _editStatus = "再次点击“放弃”将丢弃全部未保存修改；此操作不能撤销。";
                 UpdateEditControls();
                 UpdateStatusBar();
-                try { ToastHelper.Toast("请再次点击“放弃”确认丢弃剧情图草稿"); }
+                try { StoryGraphToastRouter.Show("请再次点击“放弃”确认丢弃剧情图草稿"); }
                 catch { }
                 return;
             }
@@ -6710,7 +6909,7 @@ namespace StudentAgeEditorPlus.Patches
             RefreshGraph(false);
             if (discarded)
             {
-                try { ToastHelper.Toast("已放弃未保存的剧情图修改"); }
+                try { StoryGraphToastRouter.Show("已放弃未保存的剧情图修改"); }
                 catch { }
             }
         }
@@ -7869,8 +8068,9 @@ namespace StudentAgeEditorPlus.Patches
                 _discardConfirmUntil = 0f;
                 SetEditFeedback(
                     "检测到 " + unclosedCg
-                    + " 个 CG/漫画开始节点至少有一条分支未执行“关闭 CG（4017）”。"
-                    + "请修正红色警告节点；若确实要让画面保持到剧情退出，"
+                    + " 个 CG/漫画开始节点存在会把画面带出当前剧情的分支"
+                    + "（跳转其它事件/跨组或选项死端收尾）且未执行“关闭 CG（4017）”。"
+                    + "请修正红色警告节点；若确实要让画面延续到后续剧情，"
                     + "请在 4 秒内再次点击“仍要保存”。", true);
                 UpdateEditControls();
                 return;
@@ -7911,6 +8111,12 @@ namespace StudentAgeEditorPlus.Patches
                     _editSession.Talks);
                 Dictionary<int, OptionCfg> liveOptions =
                     StoryGraphEditSession.CloneOptions(_editSession.Options);
+                // 借来显示的共享选项绝不能写回原编辑器内存：原版保存按钮会把
+                // 内存选项全量写进 mod 的 OptionCfg.json，等于绕过剧情图保存
+                // 管线的冻结过滤。原编辑器运行时会从 Cfg.OptionCfgMap 回退读取，
+                // 显示不受影响。
+                foreach (int frozenId in _editSession.FrozenBuiltInOptionIds)
+                    liveOptions.Remove(frozenId);
                 if (!EvtStoryGraphViewAccess.TryApplyDraft(
                         _view, liveTalks, liveOptions, selectTalkId, out error))
                 {
@@ -7939,12 +8145,20 @@ namespace StudentAgeEditorPlus.Patches
                 ClearEditHistories();
                 string message = "已保存 TalkCfg.json 与 OptionCfg.json，并同步回事件编辑器；"
                                  + "同时保留 .storygraph.bak 和崩溃恢复日志保护。"
+                                 + "「预览本句」用的是最新内容、随时可看；"
+                                 + "只有本局内正式触发该事件走的仍是启动时合并的旧数据，"
+                                 + "重启游戏后生效。"
                                  + workspaceCleanup;
                 _editStatus = message;
                 RefreshGraph(false);
                 UpdateEditControls();
                 UpdateStatusBar();
-                try { ToastHelper.Toast("剧情图修改已保存"); }
+                try
+                {
+                    StoryGraphToastRouter.Show(
+                        "剧情图修改已保存。「预览本句」立即可看新内容；"
+                        + "正式触发该事件需重启游戏后生效");
+                }
                 catch { }
             }
             catch (Exception e)
@@ -8078,7 +8292,7 @@ namespace StudentAgeEditorPlus.Patches
             UpdateStatusBar();
             if (toast)
             {
-                try { ToastHelper.Toast(_editStatus); }
+                try { StoryGraphToastRouter.Show(_editStatus); }
                 catch { }
             }
         }
@@ -8100,10 +8314,11 @@ namespace StudentAgeEditorPlus.Patches
                 _undoEditButton.interactable = available && _editActionTimeline.Count > 0;
             if (_redoEditButton != null)
                 _redoEditButton.interactable = available && _editRedoTimeline.Count > 0;
+            bool unsaved = available && HasUnsavedGraphChanges();
             if (_saveEditButton != null)
-                _saveEditButton.interactable = available && _editSession.Dirty;
+                _saveEditButton.interactable = unsaved;
             if (_discardEditButton != null)
-                _discardEditButton.interactable = available && _editSession.Dirty;
+                _discardEditButton.interactable = unsaved;
             SetButtonLabel(_deleteEditButton,
                 Time.unscaledTime <= _deleteConfirmUntil ? "再次删除" : "删除");
             SetButtonLabel(_discardEditButton,
@@ -8537,7 +8752,8 @@ namespace StudentAgeEditorPlus.Patches
             }
             if (node.HasFlag(EvtStoryGraphNodeFlags.CgNotClosed)
                 && authorWarningCount == 0)
-                lines.Add("CG 未关闭：至少一条可达分支在退出剧情前没有执行关闭 CG（4017）");
+                lines.Add("CG 未关闭：至少一条可达分支在跳出当前剧情图"
+                          + "或选项收尾前没有执行关闭 CG（4017）");
             return string.Join("\n", lines.ToArray());
         }
 

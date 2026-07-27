@@ -7,6 +7,7 @@ using Sdk;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
+using View.Main;
 using View.Mod;
 
 namespace StudentAgeEditorPlus.Patches
@@ -454,16 +455,19 @@ namespace StudentAgeEditorPlus.Patches
                     : null;
                 if (!StoryGraphEditPersistence.HasPendingTransaction(modRoot)) return true;
                 string error;
+                bool quarantined;
                 if (!StoryGraphEditPersistence.TryRecoverPendingTransaction(
-                        modRoot, out error))
+                        modRoot, out quarantined, out error))
                 {
                     Plugin.Log?.LogError("[EvtStoryGraph.Recover] " + error);
                     try { ToastHelper.Toast(error + "；为避免载入半提交数据，本次事件打开已取消。" ); }
                     catch { }
+                    CloseAbortedView(__instance);
                     return false; // 跳过原 OnOpen，绝不能把跨版本 Talk/Option 载入内存。
                 }
-                Plugin.Log?.LogWarning(
-                    "[EvtStoryGraph] 已在加载事件数据前恢复上次未完成的剧情图保存。" );
+                Plugin.Log?.LogWarning(quarantined
+                    ? "[EvtStoryGraph] 旧保存事务无法自动恢复，已隔离放行；事件数据按磁盘现状加载。"
+                    : "[EvtStoryGraph] 已在加载事件数据前恢复上次未完成的剧情图保存。" );
                 return true;
             }
             catch (Exception e)
@@ -471,7 +475,46 @@ namespace StudentAgeEditorPlus.Patches
                 Plugin.Log?.LogError("[EvtStoryGraph.Recover] " + e);
                 try { ToastHelper.Toast("检查剧情图保存事务失败，本次事件打开已取消；请查看日志。" ); }
                 catch { }
+                CloseAbortedView(__instance);
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Prefix 返回 false 时 BaseView.Open 已经 SetActive(true) 且
+        /// viewState==Opened，视图会以空数据状态挂在屏幕上。这里走原版取消路径
+        /// （OnClickCancel 同款 CloseView→UIMgr.CloseView）：默认关闭动画分支是
+        /// 同步执行的，Destroy 当帧完成；Open 剩余流程只再走一次不触碰
+        /// gameObject 的默认开启动画路径，不会连锁崩溃。isShowLoading 弹出的
+        /// LoadingView 通常已在 UIMgr.OnViewLoadComp（预制体加载完成，早于
+        /// OnOpen）收尾，此处仅兜底极端时序；先查 IsViewOpened 再关，避免
+        /// GetView 的 _emptyThenCreate 默认值凭空 new 实例注入 viewDict。
+        /// </summary>
+        private static void CloseAbortedView(ModEvtEditView view)
+        {
+            try
+            {
+                view?.CloseView();
+            }
+            catch (Exception e)
+            {
+                Plugin.Log?.LogError(
+                    "[EvtStoryGraph.Recover.Close] 关闭事件编辑器失败，改为直接隐藏：" + e);
+                try
+                {
+                    if (view != null && view.gameObject != null)
+                        view.gameObject.SetActive(false);
+                }
+                catch { }
+            }
+            try
+            {
+                if (UIMgr.IsViewOpened<LoadingView>())
+                    UIMgr.CloseView<LoadingView>();
+            }
+            catch (Exception e)
+            {
+                Plugin.Log?.LogError("[EvtStoryGraph.Recover.Close] 关闭加载遮罩失败：" + e);
             }
         }
 
@@ -510,14 +553,16 @@ namespace StudentAgeEditorPlus.Patches
                 // talks 传 null：TrySelectAndScroll 内部会实时重读
                 // ModEvtEditView.talkCfgs，SetDatas 总是使用当前内存列表，
                 // 而不是窗口打开时留下的旧快照。
+                // 双击定位时剧情图保持打开：提示必须走路由画到图内，
+                // 原版 Toast 会被 Overlay 剧情图盖住。
                 if (EvtStoryGraphViewAccess.TrySelectAndScroll(
                         view, talk, null, out error))
                 {
-                    ToastHelper.Toast("已定位到对话 " + talk.id);
+                    StoryGraphToastRouter.Show("已定位到对话 " + talk.id);
                 }
                 else
                 {
-                    ToastHelper.Toast(error ?? "无法定位节点。" );
+                    StoryGraphToastRouter.Show(error ?? "无法定位节点。" );
                 }
             }
             catch (Exception e)

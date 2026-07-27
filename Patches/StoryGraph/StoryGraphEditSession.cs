@@ -83,6 +83,11 @@ namespace StudentAgeEditorPlus.Patches
         private readonly HashSet<int> _builtInTalkIds = new HashSet<int>();
         private readonly HashSet<int> _builtInOptionIds = new HashSet<int>();
         private readonly HashSet<int> _builtInEventIds = new HashSet<int>();
+        // 进入编辑模式时为补齐图显示而从全局 Cfg 合并进来、且不属于当前 Mod
+        // JSON 的共享选项（如全局“确定”选项 1、跨事件段引用）。它们只借来显示：
+        // 不可编辑、保存时绝不写入当前 Mod 的 OptionCfg.json，也不写回原编辑器
+        // 内存——否则 Mod 会携带本体选项的冻结副本，在所有玩家机器上覆盖本体。
+        private readonly HashSet<int> _frozenBuiltInOptionIds = new HashSet<int>();
         private readonly HashSet<int> _globallyReferencedTalkIds = new HashSet<int>();
         private readonly HashSet<int> _globallyReferencedOptionIds = new HashSet<int>();
         private readonly Dictionary<int, string> _initialTalkJson =
@@ -99,6 +104,14 @@ namespace StudentAgeEditorPlus.Patches
         internal bool Dirty { get; private set; }
         internal string LastAction { get; private set; }
 
+        /// <summary>
+        /// 事件按 StateEvtView 播放（EvtCfg.type==60 或 displayType==1，
+        /// CommonEvtMgr 分发处）。该视图推进只读 talk.nextTalk，
+        /// talk.check/nextTalk2 与 option.nextEvtId 从不读取，
+        /// 选项 talkId/talkId2 的跳转阈值是 >0 而非 >1。
+        /// </summary>
+        internal bool IsStateEventView { get; private set; }
+
         internal bool CanUndo { get { return _undo.Count > 0; } }
         internal bool CanRedo { get { return _redo.Count > 0; } }
         internal IEnumerable<int> InitialTalkIds { get { return _initialTalkIds; } }
@@ -110,14 +123,58 @@ namespace StudentAgeEditorPlus.Patches
             int eventId,
             IEnumerable<int> entries,
             bool entriesKnown,
-            string modRoot)
+            string modRoot,
+            IEnumerable<int> mergedReferencedOptionIds = null)
         {
+            // 插件持久层固定读写 Cfgs/zh-cn（游戏运行时也只从该目录合并 mod 配置），
+            // 而原版编辑器跟随 LocalizationMgr.Lang；zh-hant 下图的数据源与写盘目录
+            // 分叉、跨事件删除保护读不到真实 EvtCfg，宁可禁用编辑。读取语言失败时
+            // 放行，不能因反射/初始化问题误伤 zh-cn 用户。
+            string currentLanguage = null;
+            try
+            {
+                currentLanguage = Sdk.LocalizationMgr.Lang;
+            }
+            catch (Exception languageError)
+            {
+                Plugin.Log?.LogWarning(
+                    "[StoryGraph.Edit] 读取游戏语言失败，按 zh-cn 继续："
+                    + languageError.Message);
+            }
+            if (!string.IsNullOrEmpty(currentLanguage)
+                && !string.Equals(currentLanguage, "zh-cn", StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "当前游戏语言为 " + currentLanguage
+                    + "：剧情图的保存与删除保护目前只支持 zh-cn 配置目录，"
+                    + "为避免数据分叉已禁用编辑。请把游戏语言切回简体中文后再用剧情图编辑"
+                    + "（游戏运行时本就只读取 Cfgs/zh-cn）。");
+
             Talks = CloneTalks(talks);
             Options = CloneOptions(options);
             EventId = eventId;
             Entries = entries != null ? new List<int>(entries) : new List<int>();
             EntriesKnown = entriesKnown;
             ModRoot = modRoot;
+            try
+            {
+                EvtCfg viewEvt;
+                string viewError;
+                if (StoryGraphEditPersistence.TryReadEffectiveEvent(
+                        modRoot, eventId, out viewEvt, out viewError)
+                    && viewEvt != null)
+                    IsStateEventView = viewEvt.type == 60
+                                       || viewEvt.displayType == 1;
+                else if (!string.IsNullOrEmpty(viewError))
+                    Plugin.Log?.LogWarning(
+                        "[StoryGraph.Edit] 读取事件显示类型失败，按普通对话事件校验："
+                        + viewError);
+            }
+            catch (Exception e)
+            {
+                Plugin.Log?.LogWarning(
+                    "[StoryGraph.Edit] 读取事件显示类型失败，按普通对话事件校验："
+                    + e.Message);
+            }
 
             foreach (TalkCfg talk in Talks)
                 if (talk != null)
@@ -173,12 +230,44 @@ namespace StudentAgeEditorPlus.Patches
             {
                 Plugin.Log?.LogWarning("[StoryGraph.Edit] 读取配置来源失败：" + e.Message);
             }
+            // 冻结集 = 合并注入且不在当前 Mod JSON 中的选项。判定只看
+            // _persistedOptionIds：即使来源快照（provenance）失效，也宁可多冻结
+            // 一个借来的选项，绝不把本体共享选项放进可写集合（fail-closed）。
+            if (mergedReferencedOptionIds != null)
+            {
+                foreach (int mergedId in mergedReferencedOptionIds)
+                    if (mergedId > 0 && !_persistedOptionIds.Contains(mergedId))
+                        _frozenBuiltInOptionIds.Add(mergedId);
+            }
             string referenceError;
             if (!StoryGraphEditPersistence.TryReadGloballyReferencedIds(
                     modRoot, _globallyReferencedTalkIds,
                     _globallyReferencedOptionIds, out referenceError))
                 throw new InvalidOperationException(referenceError);
             LastAction = "已建立独立编辑草稿；尚未修改原文件";
+        }
+
+        internal IEnumerable<int> FrozenBuiltInOptionIds
+        {
+            get { return _frozenBuiltInOptionIds; }
+        }
+
+        internal bool IsFrozenBuiltInOption(int key)
+        {
+            return _frozenBuiltInOptionIds.Contains(key);
+        }
+
+        private bool EnsureOptionEditable(int key, out string message)
+        {
+            if (!_frozenBuiltInOptionIds.Contains(key))
+            {
+                message = null;
+                return true;
+            }
+            message = "选项 " + key + " 是游戏内置/其它 Mod 的共享配置，剧情图只借来显示，"
+                      + "不会把它写入当前 Mod。如需自定义，请右键“复制”生成本事件的"
+                      + "新选项，再把对话的选项引用改挂到新编号上。";
+            return false;
         }
 
         internal bool TryAddTalk(TalkCfg near, out TalkCfg created, out string message)
@@ -364,10 +453,15 @@ namespace StudentAgeEditorPlus.Patches
             created.nextTalk2 = new List<int>();
             created.option = new List<int>();
             // 16/45 的输出藏在 miniGame 参数中；单节点复制同样不能把旧分支带过去。
-            if (MiniGameUtil.IsParamJump(created.miniGame))
+            bool paramJumpCleared = MiniGameUtil.IsParamJump(created.miniGame);
+            if (paramJumpCleared)
                 created.miniGame = new List<double>();
             Talks.Add(created);
-            message = "已复制为对话 " + id + "；输出连线已留空。";
+            message = "已复制为对话 " + id + "；输出连线已留空"
+                      + (paramJumpCleared
+                          ? "；参数跳转小游戏（含玩法与题库参数）已清空，请重新配置"
+                          : string.Empty)
+                      + "。";
             return true;
         }
 
@@ -397,8 +491,10 @@ namespace StudentAgeEditorPlus.Patches
             created.id = id;
             created.talkId = new List<int>();
             created.talkId2 = new List<int>();
-            created.nextEvtId = 0;
-            if (MiniGameUtil.IsParamJump(created.miniGame))
+            // 复制体只在当前事件编辑器实例内存活；nextEvtId 指向同一 Mod 可见的
+            // 事件，保留是安全且符合预期的，悬空目标由保存前 nextEvtId 预检兜底。
+            bool paramJumpCleared = MiniGameUtil.IsParamJump(created.miniGame);
+            if (paramJumpCleared)
                 created.miniGame = new List<double>();
             Options[id] = created;
             if (parent != null && Talks.Contains(parent))
@@ -406,7 +502,12 @@ namespace StudentAgeEditorPlus.Patches
                 if (parent.option == null) parent.option = new List<int>();
                 if (!parent.option.Contains(id)) parent.option.Add(id);
             }
-            message = "已复制为选项 " + id + "；结果连线已留空。";
+            message = "已复制为选项 " + id + "；结果连线已留空"
+                      + (created.nextEvtId > 0 ? "，后备事件跳转已保留" : string.Empty)
+                      + (paramJumpCleared
+                          ? "；参数跳转小游戏（含玩法与题库参数）已清空，请重新配置"
+                          : string.Empty)
+                      + "。";
             return true;
         }
 
@@ -504,15 +605,41 @@ namespace StudentAgeEditorPlus.Patches
 
             // 先在临时对象中完成全部深拷贝和引用重映射；只有全部成功后
             // 才 BeginMutation，避免异常形成半组配置。
+            // 条件参数（family 3）里的组内对话/选项引用同步换新编号；
+            // 组外引用是合法创作，保持原值。
+            int conditionRemaps = 0;
+            int falseBranchRepairs = 0;
+            int paramJumpClears = 0;
+            int preservedNextEvents = 0;
             foreach (TalkCfg template in talks)
             {
                 TalkCfg clone = CloneTalk(template);
                 clone.id = paste.TalkIdMap[template.id];
                 clone.nextTalk = RemapSlots(template.nextTalk, paste.TalkIdMap);
                 clone.nextTalk2 = RemapSlots(template.nextTalk2, paste.TalkIdMap);
+                // RemapSlots 把组外目标原位写 0，但 nextTalk2 首槽 0 是
+                // 整组回退开关：不修正会让已粘贴的其余槽位静默不可达。
+                // 单槽 [0] 与原生回退等价，保持现状。
+                if (clone.nextTalk2 != null && clone.nextTalk2.Count > 1
+                    && clone.nextTalk2[0] == 0
+                    && clone.nextTalk2.Skip(1).Any(value => value > 0))
+                {
+                    RepairFalseBranchFirstSlot(clone.nextTalk2, clone.nextTalk, 0);
+                    falseBranchRepairs++;
+                }
                 clone.option = RemapCollection(template.option, paste.OptionIdMap);
                 clone.miniGame = RemapMiniGameTargets(
                     template.miniGame, paste.TalkIdMap);
+                // RemapMiniGameTargets 对无法整组重映射的参数跳转返回空表：
+                // 源是参数跳转（必非空）而结果为空即被整表清空。
+                if (MiniGameUtil.IsParamJump(template.miniGame)
+                    && (clone.miniGame == null || clone.miniGame.Count == 0))
+                    paramJumpClears++;
+                int remapped;
+                clone.check = ConditionRefUtil.RemapInGroup(
+                    template.check, paste.TalkIdMap, paste.OptionIdMap,
+                    out remapped);
+                conditionRemaps += remapped;
                 paste.Talks.Add(clone);
             }
             foreach (KeyValuePair<int, OptionCfg> pair in options)
@@ -524,8 +651,25 @@ namespace StudentAgeEditorPlus.Patches
                 clone.talkId2 = RemapSlots(pair.Value.talkId2, paste.TalkIdMap);
                 clone.miniGame = RemapMiniGameTargets(
                     pair.Value.miniGame, paste.TalkIdMap);
-                // 事件节点不在当前剪贴板契约内；复制时不保留跨事件跳转。
-                clone.nextEvtId = 0;
+                if (MiniGameUtil.IsParamJump(pair.Value.miniGame)
+                    && (clone.miniGame == null || clone.miniGame.Count == 0))
+                    paramJumpClears++;
+                int remapped;
+                clone.check = ConditionRefUtil.RemapInGroup(
+                    pair.Value.check, paste.TalkIdMap, paste.OptionIdMap,
+                    out remapped);
+                conditionRemaps += remapped;
+                clone.precondition = ConditionRefUtil.RemapInGroup(
+                    pair.Value.precondition, paste.TalkIdMap, paste.OptionIdMap,
+                    out remapped);
+                conditionRemaps += remapped;
+                clone.stateCond = ConditionRefUtil.RemapInGroup(
+                    pair.Value.stateCond, paste.TalkIdMap, paste.OptionIdMap,
+                    out remapped);
+                conditionRemaps += remapped;
+                // 剪贴板只在当前事件编辑器实例内存活；nextEvtId 指向同一 Mod
+                // 可见的事件，保留是安全的，悬空目标由保存前 nextEvtId 预检兜底。
+                if (clone.nextEvtId > 0) preservedNextEvents++;
                 paste.Options.Add(id, clone);
             }
 
@@ -550,7 +694,22 @@ namespace StudentAgeEditorPlus.Patches
                       + (detachedOptionKeys.Count > 0
                           ? "，独立选项已挂到对话 " + validNear.id
                           : string.Empty)
-                      + "。";
+                      + (falseBranchRepairs > 0
+                          ? "；失败分支首槽已按整组回退语义修正 "
+                            + falseBranchRepairs + " 处"
+                          : string.Empty)
+                      + (paramJumpClears > 0
+                          ? "；" + paramJumpClears
+                            + " 处参数跳转小游戏（含玩法与题库参数）因目标不在本组内"
+                            + "已整表清空，请重新配置"
+                          : string.Empty)
+                      + (preservedNextEvents > 0
+                          ? "；" + preservedNextEvents + " 个选项的后备事件跳转已保留"
+                          : string.Empty)
+                      + "。"
+                      + (conditionRemaps > 0
+                          ? "（组内条件引用已同步重映射 " + conditionRemaps + " 处）"
+                          : string.Empty);
             return true;
         }
 
@@ -726,6 +885,7 @@ namespace StudentAgeEditorPlus.Patches
                 message = "所选选项已不在当前草稿中。";
                 return false;
             }
+            if (!EnsureOptionEditable(key, out message)) return false;
             content = content ?? string.Empty;
             showTxt = showTxt ?? string.Empty;
             tag = tag ?? string.Empty;
@@ -756,6 +916,7 @@ namespace StudentAgeEditorPlus.Patches
                 message = "所选选项已不在当前草稿中。";
                 return false;
             }
+            if (!EnsureOptionEditable(key, out message)) return false;
             if (string.IsNullOrEmpty(liveEditKey))
             {
                 message = "实时下一事件编辑键无效。";
@@ -936,6 +1097,7 @@ namespace StudentAgeEditorPlus.Patches
                 message = "所选选项已不在当前草稿中。";
                 return false;
             }
+            if (!EnsureOptionEditable(key, out message)) return false;
             List<double> next;
             if (!TryPrepareMiniGame(miniGame, false, out next, out message))
                 return false;
@@ -1134,6 +1296,7 @@ namespace StudentAgeEditorPlus.Patches
                 message = "所选选项已不在当前草稿中。";
                 return false;
             }
+            if (!EnsureOptionEditable(key, out message)) return false;
             if (logic == null)
             {
                 message = "逻辑配置为空，草稿未修改。";
@@ -1322,6 +1485,7 @@ namespace StudentAgeEditorPlus.Patches
                 message = "高级配置目标已失效或 JSON 为空。";
                 return false;
             }
+            if (!EnsureOptionEditable(key, out message)) return false;
             if (replacement.id != key)
             {
                 message = "高级 JSON 不能修改选项字典键（当前 " + key
@@ -1379,6 +1543,11 @@ namespace StudentAgeEditorPlus.Patches
         {
             string validation;
             if (!ValidateConnectionSource(port, sourceTalk, sourceOption, out validation))
+            {
+                message = validation;
+                return false;
+            }
+            if (!EnsureConnectionSourceEditable(port, sourceOption, out validation))
             {
                 message = validation;
                 return false;
@@ -1459,6 +1628,11 @@ namespace StudentAgeEditorPlus.Patches
                 message = validation;
                 return false;
             }
+            if (!EnsureConnectionSourceEditable(port, sourceOption, out validation))
+            {
+                message = validation;
+                return false;
+            }
 
             if (port == StoryGraphEditPortKind.TalkOption)
             {
@@ -1521,6 +1695,11 @@ namespace StudentAgeEditorPlus.Patches
                 message = validation;
                 return false;
             }
+            if (!EnsureConnectionSourceEditable(port, sourceOption, out validation))
+            {
+                message = validation;
+                return false;
+            }
             List<int> values = GetPortValues(port, sourceTalk, sourceOption);
             if (!HasNonZero(values))
             {
@@ -1563,6 +1742,11 @@ namespace StudentAgeEditorPlus.Patches
                 message = validation;
                 return false;
             }
+            if (!EnsureConnectionSourceEditable(port, sourceOption, out validation))
+            {
+                message = validation;
+                return false;
+            }
             List<int> values = GetPortValues(port, sourceTalk, sourceOption);
             if (values == null || index < 0 || index >= values.Count
                 || values[index] == 0)
@@ -1594,6 +1778,77 @@ namespace StudentAgeEditorPlus.Patches
                     + "·" + slotLabel
                     + " → " + removedId + "；其余槽位保持不变，可撤销。";
             return true;
+        }
+
+        /// <summary>
+        /// 会话内其余配置的条件参数（family 3）对目标的引用。连线断开逻辑不清理
+        /// 条件参数（语义不可自动推断），因此删除前 fail-closed 整体拒绝；
+        /// excluded* 是本次一并删除的对象，它们之间的互相引用不算阻塞。
+        /// </summary>
+        private string DescribeSessionConditionReferences(
+            StoryGraphEditNodeKind targetKind,
+            int targetId,
+            ICollection<TalkCfg> excludedTalks,
+            ICollection<int> excludedOptionKeys)
+        {
+            var holders = new List<string>();
+            foreach (TalkCfg talk in Talks)
+            {
+                if (talk == null) continue;
+                if (excludedTalks != null && ContainsReference(excludedTalks, talk))
+                    continue;
+                bool hit = targetKind == StoryGraphEditNodeKind.Talk
+                    ? ConditionRefUtil.ReferencesTalk(talk.check, targetId)
+                    : ConditionRefUtil.ReferencesOption(talk.check, targetId);
+                if (hit) holders.Add("对话 " + talk.id);
+            }
+            foreach (KeyValuePair<int, OptionCfg> pair in Options)
+            {
+                if (pair.Value == null) continue;
+                if (excludedOptionKeys != null
+                    && excludedOptionKeys.Contains(pair.Key)) continue;
+                bool hit;
+                if (targetKind == StoryGraphEditNodeKind.Talk)
+                    hit = ConditionRefUtil.ReferencesTalk(pair.Value.check, targetId)
+                          || ConditionRefUtil.ReferencesTalk(
+                              pair.Value.precondition, targetId)
+                          || ConditionRefUtil.ReferencesTalk(
+                              pair.Value.stateCond, targetId);
+                else
+                    hit = ConditionRefUtil.ReferencesOption(pair.Value.check, targetId)
+                          || ConditionRefUtil.ReferencesOption(
+                              pair.Value.precondition, targetId)
+                          || ConditionRefUtil.ReferencesOption(
+                              pair.Value.stateCond, targetId);
+                if (hit) holders.Add("选项 " + pair.Key);
+            }
+            return holders.Count > 0
+                ? string.Join("、", holders.ToArray())
+                : null;
+        }
+
+        /// <summary>
+        /// 借来显示的共享选项（冻结克隆）永不写回 Mod JSON，对它们“断线”不会
+        /// 持久化：若其 talkId/talkId2/参数跳转仍引用被删对话，保存后全局配置
+        /// 照旧指向已删除的对话，运行时点击即 KeyNotFound 崩溃。删除必须
+        /// fail-closed，与条件参数守卫同语义。
+        /// </summary>
+        private string DescribeFrozenOptionJumpReferences(int talkId)
+        {
+            List<string> holders = null;
+            foreach (KeyValuePair<int, OptionCfg> pair in Options)
+            {
+                OptionCfg option = pair.Value;
+                if (option == null
+                    || !_frozenBuiltInOptionIds.Contains(pair.Key)) continue;
+                bool hit = (option.talkId != null && option.talkId.Contains(talkId))
+                           || (option.talkId2 != null && option.talkId2.Contains(talkId))
+                           || MiniGameReferencesTalk(option.miniGame, talkId);
+                if (!hit) continue;
+                if (holders == null) holders = new List<string>();
+                holders.Add("选项 " + pair.Key);
+            }
+            return holders != null ? string.Join("、", holders.ToArray()) : null;
         }
 
         internal bool TryDeleteTalk(TalkCfg talk, out string message)
@@ -1644,6 +1899,26 @@ namespace StudentAgeEditorPlus.Patches
                     return false;
                 }
             }
+            if (!anotherSameId)
+            {
+                string conditionHolders = DescribeSessionConditionReferences(
+                    StoryGraphEditNodeKind.Talk, id,
+                    new[] { talk }, null);
+                if (conditionHolders != null)
+                {
+                    message = "不能删除对话 " + id + "；" + conditionHolders
+                              + " 的条件参数仍引用它，请先修改这些条件参数。";
+                    return false;
+                }
+                string frozenHolders = DescribeFrozenOptionJumpReferences(id);
+                if (frozenHolders != null)
+                {
+                    message = "不能删除对话 " + id + "；" + frozenHolders
+                              + " 是借来显示的共享配置，仍跳转到它且断线不会写盘；"
+                              + "如不想在本事件使用该选项，请先断开对话的选项引用。";
+                    return false;
+                }
+            }
 
             BeginMutation("删除对话 " + id);
             Talks.Remove(talk);
@@ -1655,10 +1930,13 @@ namespace StudentAgeEditorPlus.Patches
                     if (item == null) continue;
                     refs += ClearTalkReferencesTo(item, id);
                 }
-                foreach (OptionCfg option in Options.Values)
+                foreach (KeyValuePair<int, OptionCfg> pair in Options)
                 {
-                    if (option == null) continue;
-                    refs += ClearOptionReferencesTo(option, id);
+                    if (pair.Value == null) continue;
+                    // 冻结克隆的断线不会写盘，且必须与全局内置保持逐字节一致
+                    //（上方守卫已保证它们不引用被删对话），跳过。
+                    if (_frozenBuiltInOptionIds.Contains(pair.Key)) continue;
+                    refs += ClearOptionReferencesTo(pair.Value, id);
                 }
             }
             message = "已删除对话 " + id
@@ -1678,6 +1956,13 @@ namespace StudentAgeEditorPlus.Patches
             if (key == int.MinValue)
             {
                 message = "无法确定该选项在字典中的键。";
+                return false;
+            }
+            if (_frozenBuiltInOptionIds.Contains(key))
+            {
+                message = "选项 " + key
+                          + " 是借来显示的共享配置，不在当前 Mod 中，无法删除；"
+                          + "如不想在本事件使用它，请断开对话的选项引用。";
                 return false;
             }
             if (_builtInOptionIds.Contains(key))
@@ -1705,6 +1990,17 @@ namespace StudentAgeEditorPlus.Patches
                 if (!string.IsNullOrEmpty(references))
                 {
                     message = "不能删除选项 " + key + "；当前图之外仍有引用：" + references;
+                    return false;
+                }
+            }
+            {
+                string conditionHolders = DescribeSessionConditionReferences(
+                    StoryGraphEditNodeKind.Option, key,
+                    null, new[] { key });
+                if (conditionHolders != null)
+                {
+                    message = "不能删除选项 " + key + "；" + conditionHolders
+                              + " 的条件参数仍引用它，请先修改这些条件参数。";
                     return false;
                 }
             }
@@ -1812,11 +2108,36 @@ namespace StudentAgeEditorPlus.Patches
                         return false;
                     }
                 }
+                string conditionHolders = DescribeSessionConditionReferences(
+                    StoryGraphEditNodeKind.Talk, id, talks, deletingOptionIds);
+                if (conditionHolders != null)
+                {
+                    message = "不能删除对话 " + id + "；" + conditionHolders
+                              + " 的条件参数仍引用它，请先修改这些条件参数；"
+                              + "批量删除已整体取消。";
+                    return false;
+                }
+                string frozenHolders = DescribeFrozenOptionJumpReferences(id);
+                if (frozenHolders != null)
+                {
+                    message = "不能删除对话 " + id + "；" + frozenHolders
+                              + " 是借来显示的共享配置，仍跳转到它且断线不会写盘；"
+                              + "如不想在本事件使用该选项，请先断开对话的选项引用；"
+                              + "批量删除已整体取消。";
+                    return false;
+                }
             }
 
             foreach (KeyValuePair<int, OptionCfg> pair in optionEntries)
             {
                 int id = pair.Key;
+                if (_frozenBuiltInOptionIds.Contains(id))
+                {
+                    message = "选项 " + id
+                              + " 是借来显示的共享配置，不在当前 Mod 中，无法删除；"
+                              + "批量删除已整体取消。如不想在本事件使用它，请断开对话的选项引用。";
+                    return false;
+                }
                 if (_builtInOptionIds.Contains(id))
                 {
                     message = "选项 " + id
@@ -1847,6 +2168,15 @@ namespace StudentAgeEditorPlus.Patches
                         return false;
                     }
                 }
+                string conditionHolders = DescribeSessionConditionReferences(
+                    StoryGraphEditNodeKind.Option, id, talks, deletingOptionIds);
+                if (conditionHolders != null)
+                {
+                    message = "不能删除选项 " + id + "；" + conditionHolders
+                              + " 的条件参数仍引用它，请先修改这些条件参数；"
+                              + "批量删除已整体取消。";
+                    return false;
+                }
             }
 
             BeginMutation("批量删除 " + talks.Count + " 个对话和 "
@@ -1864,10 +2194,12 @@ namespace StudentAgeEditorPlus.Patches
                     if (talk == null) continue;
                     disconnected += ClearTalkReferencesTo(talk, id);
                 }
-                foreach (OptionCfg option in Options.Values)
+                foreach (KeyValuePair<int, OptionCfg> optionPair in Options)
                 {
-                    if (option == null) continue;
-                    disconnected += ClearOptionReferencesTo(option, id);
+                    if (optionPair.Value == null) continue;
+                    // 与 TryDeleteTalk 同理：冻结克隆跳过，守卫已挡住其引用。
+                    if (_frozenBuiltInOptionIds.Contains(optionPair.Key)) continue;
+                    disconnected += ClearOptionReferencesTo(optionPair.Value, id);
                 }
             }
             foreach (int id in deletingOptionIds)
@@ -2014,12 +2346,19 @@ namespace StudentAgeEditorPlus.Patches
             foreach (TalkCfg talk in Talks)
                 if (talk != null && reachableTalkIds.Contains(talk.id)
                     && ShouldValidateTalkRuntime(talk))
-                    ValidateTalkRuntime(talk, knownTalkIds, knownOptionIds, issues);
+                {
+                    ValidateTalkRuntime(
+                        talk, knownTalkIds, knownOptionIds,
+                        IsStateEventView, issues);
+                    if (IsStateEventView)
+                        ValidateStateEventTalkFlow(talk, issues);
+                }
             foreach (KeyValuePair<int, OptionCfg> pair in Options)
                 if (pair.Value != null && reachableOptionIds.Contains(pair.Key)
                     && ShouldValidateOptionRuntime(pair.Key, pair.Value))
                     ValidateOptionRuntime(
-                        pair.Key, pair.Value, knownTalkIds, knownEventIds, issues);
+                        pair.Key, pair.Value, knownTalkIds, knownEventIds,
+                        IsStateEventView, issues);
             ValidateAutomaticTalkCycles(issues);
             issues = issues.Distinct(StringComparer.Ordinal).ToList();
 
@@ -2253,6 +2592,7 @@ namespace StudentAgeEditorPlus.Patches
             TalkCfg talk,
             ISet<int> knownTalkIds,
             ISet<int> knownOptionIds,
+            bool stateEventView,
             ICollection<string> issues)
         {
             ValidateTalkPresentationRuntime(talk, issues);
@@ -2293,12 +2633,12 @@ namespace StudentAgeEditorPlus.Patches
 
             ValidateTalkTargetSlots(
                 "对话 " + talk.id + " 的 nextTalk",
-                talk.nextTalk, knownTalkIds, 1, issues);
+                talk.nextTalk, knownTalkIds, 1, true, issues);
             if (hasMiniGame)
             {
                 ValidateTalkTargetSlots(
                     "对话 " + talk.id + " 的 nextTalk2",
-                    talk.nextTalk2, knownTalkIds, 1, issues);
+                    talk.nextTalk2, knownTalkIds, 1, true, issues);
                 int gameId;
                 string ignored;
                 MiniGameUtil.TryGetGameId(talk.miniGame, out gameId, out ignored);
@@ -2313,6 +2653,9 @@ namespace StudentAgeEditorPlus.Patches
                 return;
             }
 
+            // StateEvtView 推进只读 nextTalk（OnClickSkip→NextTalk），
+            // talk.check/nextTalk2 从不求值，条件失败分支规则不适用。
+            if (stateEventView) return;
             if (talk.check == null || talk.check.Count == 0) return;
             bool next2FallsBack = talk.nextTalk2 == null
                                   || talk.nextTalk2.Count == 0
@@ -2345,6 +2688,7 @@ namespace StudentAgeEditorPlus.Patches
             OptionCfg option,
             ISet<int> knownTalkIds,
             ISet<int> knownEventIds,
+            bool stateEventView,
             ICollection<string> issues)
         {
             string miniGameError;
@@ -2356,6 +2700,9 @@ namespace StudentAgeEditorPlus.Patches
                                && option.miniGame.Count > 0;
             bool paramJump = hasMiniGame
                              && MiniGameUtil.IsParamJump(option.miniGame);
+            // StateEvtView 的选项跳转阈值是 GetNextTalk()>0：talkId=1 会真的
+            // 跳转，目标缺失时 Cfg.TalkCfgMap[1] 直接 KeyNotFound 崩溃。
+            int minimumTalkTarget = stateEventView ? 1 : 2;
             if (paramJump)
             {
                 ValidateParamJumpTargets(
@@ -2365,36 +2712,82 @@ namespace StudentAgeEditorPlus.Patches
             {
                 ValidateTalkTargetSlots(
                     "选项 " + optionId + " 的 talkId",
-                    option.talkId, knownTalkIds, 2, issues);
+                    option.talkId, knownTalkIds, minimumTalkTarget, false, issues);
                 ValidateTalkTargetSlots(
                     "选项 " + optionId + " 的 talkId2",
-                    option.talkId2, knownTalkIds, 2, issues);
+                    option.talkId2, knownTalkIds, minimumTalkTarget, false, issues);
                 if (hasMiniGame)
                 {
                     int gameId;
                     string ignored;
                     MiniGameUtil.TryGetGameId(option.miniGame, out gameId, out ignored);
-                    if (!HasRuntimeTarget(option.talkId, 2))
+                    // 47=漫展派对（ExpoPartyView）：选项入口的 CloseView 只关闭
+                    // NewTalkView，talkId/talkId2/success/fail 全部不读，流程由
+                    // 视图自行收尾（原版 31502101 双出口全空即活例）。
+                    if (gameId != 47 && !HasRuntimeTarget(option.talkId, 2))
                         issues.Add("选项 " + optionId + " 的小游戏 "
                                  + MiniGameUtil.GameName(gameId)
                                  + " 没有成功出口，结束后可能停住。");
-                    if (gameId != 29 && !HasRuntimeTarget(option.talkId2, 2))
+                    // 29=大头贴只回调成功出口；36=谈判组队（NegotiationTeamView）
+                    // CloseView 只读 talkId 成功出口（原版 31106805 无失败出口）。
+                    if (gameId != 29 && gameId != 36 && gameId != 47
+                        && !HasRuntimeTarget(option.talkId2, 2))
                         issues.Add("选项 " + optionId + " 的小游戏 "
                                  + MiniGameUtil.GameName(gameId)
                                  + " 没有失败出口，失败后可能停住。");
                 }
             }
 
-            if (option.nextEvtId > 0 && !knownEventIds.Contains(option.nextEvtId))
+            // StateEvtView 的选项点击流程从不读取 nextEvtId（落空即 CloseView），
+            // 悬空引用无害，不做拦截。
+            if (!stateEventView && option.nextEvtId > 0
+                && !knownEventIds.Contains(option.nextEvtId))
                 issues.Add("选项 " + optionId + " 的 nextEvtId 指向不存在的事件 "
                          + option.nextEvtId + "。");
         }
 
+        /// <summary>
+        /// StateEvtView 专属：无可拦截选项（或空正文自动透传）的对话只靠
+        /// nextTalk 推进；ShowTalk 对空列表直接索引 [0] 越界崩溃，对 0 直接
+        /// return（没有"对话 0=结束"语义），玩家会停在原地。
+        /// </summary>
+        private static void ValidateStateEventTalkFlow(
+            TalkCfg talk, ICollection<string> issues)
+        {
+            // StateEvtView 的透传判定是 content.IsEmpty()==string.IsNullOrEmpty
+            //（BasicTypeExtension.IsEmpty），纯空白正文会正常显示并停在选项处，
+            // 不能按 IsNullOrWhiteSpace 误判为透传。
+            bool hasVisibleOptions = !string.IsNullOrEmpty(talk.content)
+                                     && talk.option != null
+                                     && talk.option.Any(id => id != 0);
+            if (hasVisibleOptions) return;
+            if (talk.nextTalk == null || talk.nextTalk.Count == 0)
+            {
+                issues.Add("对话 " + talk.id
+                         + " 在状态演出事件中没有可显示的选项，且 nextTalk 为空；"
+                         + "玩家点跳过（或空正文自动透传）时会数组越界崩溃。");
+                return;
+            }
+            if (RuntimeGenderValue(talk.nextTalk, 0) == 0
+                && RuntimeGenderValue(talk.nextTalk, 1) == 0)
+            {
+                issues.Add("对话 " + talk.id + " 的 nextTalk 槽位都是 0；"
+                         + "状态演出事件没有“对话 0=结束”语义，会软锁死；"
+                         + "请让链条最终落到一条带选项的对话（选项落空即优雅关闭）。");
+            }
+        }
+
+        /// <summary>
+        /// reportNegative 仅对对话槽位为 true：ShowTalk 对非 0 值直接索引
+        /// TalkCfgMap，负数即崩。选项槽位有 GetNextTalk()>0（StateEvtView）
+        /// 或 >1（NewTalkView）闸门，负数到不了索引处，只会优雅落空。
+        /// </summary>
         private static void ValidateTalkTargetSlots(
             string owner,
             IList<int> values,
             ISet<int> knownTalkIds,
             int minimumRuntimeId,
+            bool reportNegative,
             ICollection<string> issues)
         {
             if (values == null) return;
@@ -2408,7 +2801,7 @@ namespace StudentAgeEditorPlus.Patches
                     issues.Add(owner + " 的 " + GenderSlotLabel(values.Count, i)
                              + "指向不存在的对话 " + targetId + "。");
                 }
-                else if (minimumRuntimeId == 1 && targetId < 0)
+                else if (reportNegative && targetId < 0)
                 {
                     issues.Add(owner + " 的 " + GenderSlotLabel(values.Count, i)
                              + "不能是负数 " + targetId + "。");
@@ -2466,7 +2859,9 @@ namespace StudentAgeEditorPlus.Patches
                 {
                     int primary = RuntimeGenderValue(talk.nextTalk, gender);
                     AddAutomaticEdge(id, primary, automatic, edges, indegree);
-                    if (primary <= 0 || talk.check == null
+                    // StateEvtView 从不求值 check/nextTalk2，失败分支不构成
+                    // 循环边；OnClickSkip 沿 nextTalk 的循环仍照常检测。
+                    if (primary <= 0 || IsStateEventView || talk.check == null
                         || talk.check.Count == 0) continue;
                     bool fallsBack = talk.nextTalk2 == null
                                      || talk.nextTalk2.Count == 0
@@ -2492,13 +2887,106 @@ namespace StudentAgeEditorPlus.Patches
                 }
             }
             if (visited == automatic.Count) return;
-            string sample = string.Join("、", indegree
+            var residual = new HashSet<int>(indegree
                 .Where(pair => pair.Value > 0)
-                .Select(pair => pair.Key.ToString())
-                .Take(6).ToArray());
-            issues.Add("直连对话形成不会被小游戏或可见选项截断的循环（涉及 "
-                     + sample + "）。点击“跳过”会无限循环；若其中有空正文，"
-                     + "正常播放也可能同步递归直至栈溢出。");
+                .Select(pair => pair.Key));
+            // Kahn 残差含“仅被循环指向的下游非环节点”，且同一事件可能有多个
+            // 互不连通的循环——门控必须按真环（强连通分量）逐个独立判定，
+            // 否则下游节点或另一循环上的随机行会错误豁免确定性死循环。
+            foreach (HashSet<int> component in
+                     ResidualCycleComponents(residual, edges))
+            {
+                // 原版自带确定性自环（16 个自环对话）；作者一字未改的既有/
+                // 内置结构不拦截保存，本环里至少有一个本次会话修改或新增的
+                // 成员才算作者引入的问题。
+                if (!component.Any(id => ShouldValidateTalkRuntime(byId[id])))
+                    continue;
+                // family 0/333 每次求值独立随机，但必须真的构成分歧出口——
+                // 成员未整组回退且至少一个性别的真/假分支有一侧离开本环，
+                // 循环才有概率终止；StateEvtView 从不求值 check，不适用。
+                if (!IsStateEventView && component.Any(
+                        id => HasEscapableRandomBranch(byId[id], component)))
+                    continue;
+                string sample = string.Join("、", component
+                    .OrderBy(id => id)
+                    .Select(id => id.ToString())
+                    .Take(6).ToArray());
+                issues.Add("直连对话形成确定性循环（涉及 " + sample
+                         + "），没有小游戏、可见选项或随机条件出口。"
+                         + "点击“跳过”会无限循环；若其中有空正文，"
+                         + "正常播放会同步递归直至栈溢出。");
+            }
+        }
+
+        /// <summary>
+        /// 残差图中真正构成循环的强连通分量（尺寸 1 的分量仅在自指时算环，
+        /// 被循环指向的下游节点被排除）。残差规模小，用逐点 BFS 可达集求解。
+        /// </summary>
+        private static List<HashSet<int>> ResidualCycleComponents(
+            HashSet<int> residual, IDictionary<int, HashSet<int>> edges)
+        {
+            var reach = new Dictionary<int, HashSet<int>>();
+            foreach (int start in residual)
+            {
+                var seen = new HashSet<int>(); // 路径长度 ≥1 的可达集，不含起点自身
+                var queue = new Queue<int>();
+                queue.Enqueue(start);
+                while (queue.Count > 0)
+                    foreach (int next in edges[queue.Dequeue()])
+                        if (residual.Contains(next) && seen.Add(next))
+                            queue.Enqueue(next);
+                reach[start] = seen;
+            }
+            var assigned = new HashSet<int>();
+            var components = new List<HashSet<int>>();
+            foreach (int id in residual)
+            {
+                if (assigned.Contains(id)) continue;
+                var component = new HashSet<int> { id };
+                foreach (int other in reach[id])
+                    if (other != id && reach[other].Contains(id))
+                        component.Add(other);
+                assigned.UnionWith(component);
+                if (component.Count > 1 || reach[id].Contains(id))
+                    components.Add(component);
+            }
+            return components;
+        }
+
+        /// <summary>
+        /// 成员的随机条件是否真能把执行带离所在循环：check 含 family 0/333、
+        /// nextTalk2 未整组回退（GetNextTalk2 语义：null/空/首项 0 ⇒ 与
+        /// nextTalk 同边），且至少一个性别的真/假分支目标不同并有一侧不在
+        /// 本分量内（含 ≤0 的结束值与带选项/小游戏的非自动对话）。
+        /// </summary>
+        private static bool HasEscapableRandomBranch(
+            TalkCfg talk, ICollection<int> component)
+        {
+            if (talk == null || !HasRandomConditionRow(talk.check)) return false;
+            if (talk.nextTalk2 == null || talk.nextTalk2.Count == 0
+                || talk.nextTalk2[0] == 0)
+                return false;
+            for (int gender = 0; gender < 2; gender++)
+            {
+                int primary = RuntimeGenderValue(talk.nextTalk, gender);
+                int secondary = RuntimeGenderValue(talk.nextTalk2, gender);
+                if (primary == secondary) continue;
+                if (!component.Contains(primary) || !component.Contains(secondary))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>family 0=ConditionerRandom、333=ConditionerRandom2，每次求值独立随机。</summary>
+        private static bool HasRandomConditionRow(List<List<double>> check)
+        {
+            if (check == null) return false;
+            foreach (List<double> row in check)
+            {
+                if (row == null || row.Count == 0) continue;
+                if (row[0] == 0d || row[0] == 333d) return true;
+            }
+            return false;
         }
 
         private HashSet<int> BuildReachableTalkIdsForValidation(
@@ -2657,7 +3145,12 @@ namespace StudentAgeEditorPlus.Patches
             foreach (KeyValuePair<int, OptionCfg> pair in Options)
             {
                 _initialOptionIds.Add(pair.Key);
-                _persistedOptionIds.Add(pair.Key);
+                // 冻结克隆刚被 ApplyOptionChanges 有意跳过、从未写入 Mod
+                // OptionCfg.json，不能并入“整份 Mod JSON 占用集合”；
+                // _initialOptionIds/_initialOptionJson 保留以维持 TrySave
+                // 的 initialIds 跳过逻辑。
+                if (!_frozenBuiltInOptionIds.Contains(pair.Key))
+                    _persistedOptionIds.Add(pair.Key);
                 if (pair.Value != null)
                     _initialOptionJson[pair.Key] =
                         JsonConvert.SerializeObject(pair.Value, Formatting.None);
@@ -2996,23 +3489,8 @@ namespace StudentAgeEditorPlus.Patches
 
             if (values[0] == targetId)
             {
-                int fallback = RuntimeGenderValue(talk.nextTalk, 0);
-                if (fallback == targetId) fallback = 0;
-                if (fallback <= 0 && values.Count > 1
-                    && values[1] > 0 && values[1] != targetId)
-                    fallback = values[1];
-                if (fallback <= 0)
-                {
-                    int femalePrimary = RuntimeGenderValue(talk.nextTalk, 1);
-                    if (femalePrimary > 0 && femalePrimary != targetId)
-                        fallback = femalePrimary;
-                }
-                if (fallback > 0) values[0] = fallback;
-                else
-                {
-                    values.Clear();
-                    return count;
-                }
+                RepairFalseBranchFirstSlot(values, talk.nextTalk, targetId);
+                if (values.Count == 0) return count;
             }
             if (values.Count > 1 && values[1] == targetId)
             {
@@ -3020,6 +3498,30 @@ namespace StudentAgeEditorPlus.Patches
                 values[1] = fallback > 0 && fallback != targetId ? fallback : 0;
             }
             return count;
+        }
+
+        /// <summary>
+        /// nextTalk2 首槽重写为可用回退值：优先男性 nextTalk 主值，其次
+        /// 女性槽自身，再次女性 nextTalk 主值；全部落空则整组清空——
+        /// 等价原生回退，且不假装保留了失败分支。删除路径传 excludedId
+        /// 排除正被删除的目标，粘贴等其余路径传 0。
+        /// </summary>
+        private static void RepairFalseBranchFirstSlot(
+            List<int> nextTalk2, List<int> nextTalk, int excludedId)
+        {
+            int fallback = RuntimeGenderValue(nextTalk, 0);
+            if (fallback == excludedId) fallback = 0;
+            if (fallback <= 0 && nextTalk2.Count > 1
+                && nextTalk2[1] > 0 && nextTalk2[1] != excludedId)
+                fallback = nextTalk2[1];
+            if (fallback <= 0)
+            {
+                int femalePrimary = RuntimeGenderValue(nextTalk, 1);
+                if (femalePrimary > 0 && femalePrimary != excludedId)
+                    fallback = femalePrimary;
+            }
+            if (fallback > 0) nextTalk2[0] = fallback;
+            else nextTalk2.Clear();
         }
 
         private static List<int> RemapCollection(
@@ -3064,6 +3566,24 @@ namespace StudentAgeEditorPlus.Patches
             {
                 error = "连线起点不是当前草稿中的真实选项。";
                 return false;
+            }
+            error = null;
+            return true;
+        }
+
+        // 连线命令写的是端口源对象自身的字段：源是选项（talkId/talkId2）时等同
+        // 于编辑该选项，冻结的共享选项必须拒绝；对话侧挂上/断开选项引用
+        // （TalkOption 端口）改的是对话字段，不受此限制。
+        private bool EnsureConnectionSourceEditable(
+            StoryGraphEditPortKind port, OptionCfg sourceOption, out string error)
+        {
+            if ((port == StoryGraphEditPortKind.OptionTalk
+                 || port == StoryGraphEditPortKind.OptionTalk2)
+                && sourceOption != null)
+            {
+                int key = FindOptionKey(sourceOption);
+                if (key != int.MinValue && !EnsureOptionEditable(key, out error))
+                    return false;
             }
             error = null;
             return true;
@@ -3314,6 +3834,19 @@ namespace StudentAgeEditorPlus.Patches
             public JournalFile Option;
         }
 
+        /// <summary>
+        /// 恢复前对单个配置文件的判定。后两种是“确定性不可恢复”——再试多少次
+        /// 结果都一样，只能隔离日志放行；瞬时 IO/解析失败不产生判定值，
+        /// 而是抛异常走外层 catch 继续阻塞，留待下次自愈或人工处理。
+        /// </summary>
+        private enum JournalFileState
+        {
+            AtOriginal,
+            Restorable,
+            ReplacementWithoutBackup,
+            ExternalChange,
+        }
+
         internal static bool TryReadPersistedIds(
             string modRoot, HashSet<int> talkIds, HashSet<int> optionIds)
         {
@@ -3481,6 +4014,8 @@ namespace StudentAgeEditorPlus.Patches
                     AddIds(talkIds, evt.talkId);
                     AddMiniGameTalkIds(talkIds, evt.miniGame);
                     AddIds(optionIds, evt.options);
+                    ConditionRefUtil.CollectTalkIds(evt.condition, talkIds);
+                    ConditionRefUtil.CollectOptionIds(evt.condition, optionIds);
                 }
                 foreach (TalkCfg talk in talks.Values)
                 {
@@ -3489,6 +4024,8 @@ namespace StudentAgeEditorPlus.Patches
                     AddIds(talkIds, talk.nextTalk2);
                     AddMiniGameTalkIds(talkIds, talk.miniGame);
                     AddIds(optionIds, talk.option);
+                    ConditionRefUtil.CollectTalkIds(talk.check, talkIds);
+                    ConditionRefUtil.CollectOptionIds(talk.check, optionIds);
                 }
                 foreach (OptionCfg option in options.Values)
                 {
@@ -3496,6 +4033,12 @@ namespace StudentAgeEditorPlus.Patches
                     AddIds(talkIds, option.talkId);
                     AddIds(talkIds, option.talkId2);
                     AddMiniGameTalkIds(talkIds, option.miniGame);
+                    ConditionRefUtil.CollectTalkIds(option.check, talkIds);
+                    ConditionRefUtil.CollectOptionIds(option.check, optionIds);
+                    ConditionRefUtil.CollectTalkIds(option.precondition, talkIds);
+                    ConditionRefUtil.CollectOptionIds(option.precondition, optionIds);
+                    ConditionRefUtil.CollectTalkIds(option.stateCond, talkIds);
+                    ConditionRefUtil.CollectOptionIds(option.stateCond, optionIds);
                 }
                 return true;
             }
@@ -3570,6 +4113,9 @@ namespace StudentAgeEditorPlus.Patches
                                 pair.Value.miniGame, targetId))
                             AddReference(found, "事件 " + pair.Key
                                 + " 的参数跳转小游戏结果（EvtCfg.miniGame）");
+                        if (ConditionRefUtil.ReferencesTalk(
+                                pair.Value.condition, targetId))
+                            AddReference(found, "事件 " + pair.Key + " 的条件参数");
                     }
                     foreach (KeyValuePair<int, TalkCfg> pair in talks)
                     {
@@ -3582,6 +4128,9 @@ namespace StudentAgeEditorPlus.Patches
                                 pair.Value.miniGame, targetId))
                             AddReference(found, "对话 " + pair.Key
                                 + " 的参数跳转小游戏结果");
+                        if (ConditionRefUtil.ReferencesTalk(
+                                pair.Value.check, targetId))
+                            AddReference(found, "对话 " + pair.Key + " 的条件参数");
                     }
                     foreach (KeyValuePair<int, OptionCfg> pair in options)
                     {
@@ -3594,20 +4143,43 @@ namespace StudentAgeEditorPlus.Patches
                                 pair.Value.miniGame, targetId))
                             AddReference(found, "选项 " + pair.Key
                                 + " 的参数跳转小游戏结果");
+                        if (ConditionRefUtil.ReferencesTalk(pair.Value.check, targetId)
+                            || ConditionRefUtil.ReferencesTalk(
+                                pair.Value.precondition, targetId)
+                            || ConditionRefUtil.ReferencesTalk(
+                                pair.Value.stateCond, targetId))
+                            AddReference(found, "选项 " + pair.Key + " 的条件参数");
                     }
                 }
                 else if (targetKind == StoryGraphEditNodeKind.Option)
                 {
                     foreach (KeyValuePair<int, EvtCfg> pair in events)
                     {
-                        if (pair.Value != null && Contains(pair.Value.options, targetId))
+                        if (pair.Value == null) continue;
+                        if (Contains(pair.Value.options, targetId))
                             AddReference(found, "事件 " + pair.Key + " 的事件级选项（EvtCfg.options）");
+                        if (ConditionRefUtil.ReferencesOption(
+                                pair.Value.condition, targetId))
+                            AddReference(found, "事件 " + pair.Key + " 的条件参数");
                     }
                     foreach (KeyValuePair<int, TalkCfg> pair in talks)
                     {
                         if (localTalkSources.Contains(pair.Key) || pair.Value == null) continue;
                         if (Contains(pair.Value.option, targetId))
                             AddReference(found, "对话 " + pair.Key + " 的选项字段");
+                        if (ConditionRefUtil.ReferencesOption(
+                                pair.Value.check, targetId))
+                            AddReference(found, "对话 " + pair.Key + " 的条件参数");
+                    }
+                    foreach (KeyValuePair<int, OptionCfg> pair in options)
+                    {
+                        if (localOptionSources.Contains(pair.Key) || pair.Value == null) continue;
+                        if (ConditionRefUtil.ReferencesOption(pair.Value.check, targetId)
+                            || ConditionRefUtil.ReferencesOption(
+                                pair.Value.precondition, targetId)
+                            || ConditionRefUtil.ReferencesOption(
+                                pair.Value.stateCond, targetId))
+                            AddReference(found, "选项 " + pair.Key + " 的条件参数");
                     }
                 }
 
@@ -3764,6 +4336,11 @@ namespace StudentAgeEditorPlus.Patches
             FileStream talkGuard = null;
             FileStream optionGuard = null;
             TransactionJournal journal = null;
+            // Committed=true 落盘即提交点：两个正式 JSON 已一致替换完成。此后任何
+            // 失败（如用户备份发布）都只能降级为警告，绝不能翻转回滚——否则一份
+            // .tx 备份恰好缺失时会回滚成功一半、失败一半，落成半新半旧终态。
+            // 该语义必须与恢复路径的 PublishRecoveredUserBackup 保持一致。
+            bool committedOnDisk = false;
             string journalPath = JournalPath(session.ModRoot);
             try
             {
@@ -3868,8 +4445,20 @@ namespace StudentAgeEditorPlus.Patches
                 // 若标记前崩溃，恢复器用两份事务备份统一回到旧版本。
                 journal.Committed = true;
                 WriteJournal(journalPath, journal);
-                PublishUserBackup(talkPlan);
-                PublishUserBackup(optionPlan);
+                committedOnDisk = true;
+                try
+                {
+                    PublishUserBackup(talkPlan);
+                    PublishUserBackup(optionPlan);
+                }
+                catch (Exception backupError)
+                {
+                    // 与 PublishRecoveredUserBackup 同语义：提交已完整落盘，
+                    // 用户备份发布失败不构成保存失败，更不允许触发回滚。
+                    Plugin.Log?.LogWarning(
+                        "[StoryGraph.Edit.Save] 新配置已完整提交，"
+                        + "但发布 .storygraph.bak 用户备份失败：" + backupError.Message);
+                }
                 DeleteIfExists(journalPath);
                 CleanupTransactionArtifacts(talkPlan);
                 CleanupTransactionArtifacts(optionPlan);
@@ -3877,6 +4466,18 @@ namespace StudentAgeEditorPlus.Patches
             }
             catch (Exception e)
             {
+                if (committedOnDisk)
+                {
+                    // 防御分支：提交点之后理论上不再有可抛出的步骤，但若真的走到
+                    // 这里，新配置对已经一致落盘，绝不能回滚或改写提交标记。
+                    Plugin.Log?.LogError(
+                        "[StoryGraph.Edit.Save] 提交点之后出现异常，"
+                        + "新配置已完整落盘，不执行回滚：" + e);
+                    DeleteIfExists(journalPath);
+                    CleanupTransactionArtifacts(talkPlan);
+                    CleanupTransactionArtifacts(optionPlan);
+                    return true;
+                }
                 if (journal != null)
                 {
                     journal.Committed = false;
@@ -3923,10 +4524,22 @@ namespace StudentAgeEditorPlus.Patches
             catch { return false; }
         }
 
-        /// <summary>发现上次强退留下的事务日志时，统一完成提交清理或回滚两份配置。</summary>
         internal static bool TryRecoverPendingTransaction(
             string modRoot, out string error)
         {
+            bool quarantined;
+            return TryRecoverPendingTransaction(modRoot, out quarantined, out error);
+        }
+
+        /// <summary>
+        /// 发现上次强退留下的事务日志时，统一完成提交清理或回滚两份配置。
+        /// quarantined=true 表示日志确定性不可恢复、已隔离放行：磁盘保持
+        /// 现状，什么都没有被恢复，调用方的提示不得声称“已恢复”。
+        /// </summary>
+        internal static bool TryRecoverPendingTransaction(
+            string modRoot, out bool quarantined, out string error)
+        {
+            quarantined = false;
             error = null;
             if (string.IsNullOrWhiteSpace(modRoot))
             {
@@ -3951,6 +4564,18 @@ namespace StudentAgeEditorPlus.Patches
                 }
                 else
                 {
+                    // 回滚是双文件统一动作：先各自判定，任何一份确定性不可恢复
+                    // 时都不得只回滚另一份（会落成半新半旧终态），改为隔离日志
+                    // 放行；判定期间的瞬时 IO 异常仍走 catch 继续阻塞。
+                    JournalFileState talkState = ClassifyJournalFile(journal.Talk);
+                    JournalFileState optionState = ClassifyJournalFile(journal.Option);
+                    if (IsDeterministicallyUnrecoverable(talkState)
+                        || IsDeterministicallyUnrecoverable(optionState))
+                    {
+                        QuarantineStaleJournal(path, talkState, optionState);
+                        quarantined = true;
+                        return true;
+                    }
                     RestoreJournalFile(journal.Option);
                     RestoreJournalFile(journal.Talk);
                     Plugin.Log?.LogWarning(
@@ -4017,6 +4642,9 @@ namespace StudentAgeEditorPlus.Patches
             foreach (KeyValuePair<int, OptionCfg> pair in session.Options)
             {
                 int id = pair.Key;
+                // 借来显示的本体共享选项永不写入当前 Mod 的 OptionCfg.json，
+                // 否则 Mod 会携带它的冻结副本，在所有玩家机器上覆盖本体。
+                if (session.IsFrozenBuiltInOption(id)) continue;
                 List<string> keys = FindKeys(map, id, value => value != null ? value.id : 0);
                 EnsureAtMostOneKey("选项", id, keys);
                 if (!initialIds.Contains(id) && keys.Count > 0)
@@ -4233,7 +4861,7 @@ namespace StudentAgeEditorPlus.Patches
                 Existed = expected != null && expected.Exists,
                 Expected = expected,
             };
-            File.WriteAllText(plan.Temp, json ?? "{}", new UTF8Encoding(false));
+            WriteDurable(plan.Temp, json ?? "{}");
             plan.Replacement = CaptureFingerprint(plan.Temp);
             return plan;
         }
@@ -4245,6 +4873,9 @@ namespace StudentAgeEditorPlus.Patches
                 "建立事务备份前配置文件被其它工具修改");
             if (!plan.Existed) return;
             File.Copy(plan.Path, plan.TransactionBackup, true);
+            // 事务备份必须先于正式替换真实落盘：断电后日志若指向一份只存在
+            // 于 OS 缓存的备份，恢复器将无从回滚。
+            FlushFileToDisk(plan.TransactionBackup);
             FileFingerprint backup = CaptureFingerprint(plan.TransactionBackup);
             if (!FingerprintEquals(plan.Expected, backup))
                 throw new IOException("事务备份与读取时的配置内容不一致，已取消保存。" );
@@ -4271,6 +4902,11 @@ namespace StudentAgeEditorPlus.Patches
             if (plan == null) throw new ArgumentNullException(nameof(plan));
             EnsureUnchanged(plan.Path, plan.Expected,
                 "正式替换前配置文件被其它工具修改");
+            // 悲观标记：Windows ReplaceFile 存在文档化的部分失败态（如
+            // ERROR_UNABLE_TO_MOVE_REPLACEMENT_2——原文件已改名为 swap 备份、
+            // 替换文件未就位即抛出）。标记必须先于改名动作，失败后才会进
+            // TryRollback 的指纹判定而不是被 !Replaced 早退直接当作“未动过”。
+            plan.Replaced = true;
             if (plan.Existed)
             {
                 DeleteIfExists(plan.SwapBackup);
@@ -4281,7 +4917,6 @@ namespace StudentAgeEditorPlus.Patches
             {
                 File.Move(plan.Temp, plan.Path);
             }
-            plan.Replaced = true;
             FileFingerprint written = CaptureFingerprint(plan.Path);
             if (!FingerprintEquals(plan.Replacement, written))
                 throw new IOException("正式配置写入后指纹不一致，事务将回滚。" );
@@ -4306,12 +4941,29 @@ namespace StudentAgeEditorPlus.Patches
                     plan.Replaced = false;
                     return true;
                 }
+                if (plan.Existed && !current.Exists)
+                {
+                    // File.Replace 的部分失败态：原文件已被改名走、替换文件
+                    // 未就位，目标此刻缺失。事务备份在替换前已强制落盘，直接
+                    // 补回；备份缺失则返回 false 保住日志与 .tx 留待下次恢复。
+                    if (!File.Exists(plan.TransactionBackup)) return false;
+                    File.Copy(plan.TransactionBackup, plan.Path, true);
+                    FlushFileToDisk(plan.Path);
+                    if (!FingerprintEquals(
+                            CaptureFingerprint(plan.Path), plan.Expected))
+                        return false;
+                    plan.Replaced = false;
+                    return true;
+                }
                 if (!FingerprintEquals(current, plan.Replacement))
                     return false; // 有会话外新写入，绝不拿旧备份覆盖它。
                 if (plan.Existed)
                 {
                     if (!File.Exists(plan.TransactionBackup)) return false;
                     File.Copy(plan.TransactionBackup, plan.Path, true);
+                    // 回滚成功后调用方随即删除日志与 .tx 备份（NTFS 元数据操作
+                    // 先于缓存数据落盘），这里必须先把回滚内容真实推到磁盘。
+                    FlushFileToDisk(plan.Path);
                 }
                 else if (File.Exists(plan.Path))
                 {
@@ -4337,9 +4989,8 @@ namespace StudentAgeEditorPlus.Patches
             string swap = path + ".swap." + Guid.NewGuid().ToString("N");
             try
             {
-                File.WriteAllText(temp,
-                    JsonConvert.SerializeObject(journal, Formatting.Indented),
-                    new UTF8Encoding(false));
+                WriteDurable(temp,
+                    JsonConvert.SerializeObject(journal, Formatting.Indented));
                 if (File.Exists(path))
                 {
                     File.Replace(temp, path, swap, true);
@@ -4360,30 +5011,48 @@ namespace StudentAgeEditorPlus.Patches
         private static void ValidateJournalFile(
             JournalFile file, string expectedPath)
         {
+            if (file == null) throw new InvalidDataException("事务文件项为空。" );
             string expected = Path.GetFullPath(expectedPath);
-            string actual = Path.GetFullPath(file.Path ?? string.Empty);
-            if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("事务日志目标路径不属于当前 Mod：" + actual);
-            ValidateJournalAuxPath(file.Temp, expected + ".storygraph.tmp.");
-            ValidateJournalAuxPath(file.TransactionBackup,
-                expected + ".storygraph.tx.", ".bak");
-            ValidateJournalAuxPath(file.SwapBackup,
-                expected + ".storygraph.swap.", ".bak");
+            string expectedName = Path.GetFileName(expected);
+            // 日志由作者机写下后可能随创意工坊整目录上传（SetItemContent 不触发
+            // 任何清理钩子）或被整目录挪动，记录的绝对路径在本机必然对不上；
+            // 恢复只关心同目录内这几个文件，因此校验文件名形状后一律重定位
+            // （rebase）到本机 Mod 路径。指纹校验保持不变。
+            if (!string.Equals(expectedName,
+                    Path.GetFileName(file.Path ?? string.Empty),
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "事务日志目标文件名与配置不符：" + file.Path);
+            file.Path = expected;
+            string directory = Path.GetDirectoryName(expected);
+            file.Temp = RebaseJournalAuxPath(
+                file.Temp, directory, expectedName + ".storygraph.tmp.");
+            file.TransactionBackup = RebaseJournalAuxPath(
+                file.TransactionBackup, directory,
+                expectedName + ".storygraph.tx.", ".bak");
+            file.SwapBackup = RebaseJournalAuxPath(
+                file.SwapBackup, directory,
+                expectedName + ".storygraph.swap.", ".bak");
             // 同时验证 Base64 指纹字段，损坏日志必须 fail-closed，不能猜测回滚。
             FingerprintFromJournal(file, false);
             FingerprintFromJournal(file, true);
         }
 
-        private static void ValidateJournalAuxPath(
-            string value, string requiredPrefix, string requiredSuffix = null)
+        private static string RebaseJournalAuxPath(
+            string value, string directory,
+            string requiredPrefix, string requiredSuffix = null)
         {
             if (string.IsNullOrWhiteSpace(value))
                 throw new InvalidDataException("事务日志包含空的临时路径。" );
-            string full = Path.GetFullPath(value);
-            if (!full.StartsWith(requiredPrefix, StringComparison.OrdinalIgnoreCase)
+            string name = Path.GetFileName(value);
+            int minLength = requiredPrefix.Length
+                            + (requiredSuffix != null ? requiredSuffix.Length : 0);
+            if (name.Length <= minLength
+                || !name.StartsWith(requiredPrefix, StringComparison.OrdinalIgnoreCase)
                 || (!string.IsNullOrEmpty(requiredSuffix)
-                    && !full.EndsWith(requiredSuffix, StringComparison.OrdinalIgnoreCase)))
-                throw new InvalidDataException("事务日志临时路径格式无效：" + full);
+                    && !name.EndsWith(requiredSuffix, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidDataException("事务日志临时路径格式无效：" + name);
+            return Path.Combine(directory, name);
         }
 
         private static void PublishRecoveredUserBackup(JournalFile file)
@@ -4403,29 +5072,102 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        private static void RestoreJournalFile(JournalFile file)
+        private static JournalFileState ClassifyJournalFile(JournalFile file)
         {
             if (file == null) throw new InvalidDataException("事务文件项为空。" );
             FileFingerprint original = FingerprintFromJournal(file, false);
             FileFingerprint replacement = FingerprintFromJournal(file, true);
             FileFingerprint current = CaptureFingerprint(file.Path);
-            if (FingerprintEquals(current, original)) return; // 此文件尚未替换。
+            if (FingerprintEquals(current, original))
+                return JournalFileState.AtOriginal;
+            // 断电恰落在 File.Replace 两次改名之间时目标文件缺失，但事务备份
+            // 仍是保存前原文——确定性可恢复（File.Copy 天然支持目标缺失），
+            // 不能归入 ExternalChange 被隔离放行；备份缺失或内容不符则维持
+            // 下方的不可恢复判定。
+            if (file.Existed && !current.Exists
+                && File.Exists(file.TransactionBackup)
+                && FingerprintEquals(
+                    CaptureFingerprint(file.TransactionBackup), original))
+                return JournalFileState.Restorable;
             if (!FingerprintEquals(current, replacement))
+                return JournalFileState.ExternalChange;
+            if (file.Existed && !File.Exists(file.TransactionBackup))
+                return JournalFileState.ReplacementWithoutBackup;
+            return JournalFileState.Restorable;
+        }
+
+        private static bool IsDeterministicallyUnrecoverable(JournalFileState state)
+        {
+            return state == JournalFileState.ExternalChange
+                   || state == JournalFileState.ReplacementWithoutBackup;
+        }
+
+        private static string DescribeJournalFileState(JournalFileState state)
+        {
+            switch (state)
+            {
+                case JournalFileState.AtOriginal:
+                    return "仍是保存前的旧版本，无需回滚";
+                case JournalFileState.Restorable:
+                    return "是未提交的新版本，事务备份可用";
+                case JournalFileState.ReplacementWithoutBackup:
+                    return "已是未提交的新版本，但事务备份缺失，无料可回滚";
+                case JournalFileState.ExternalChange:
+                    return "在会话外被其它工具改写，回滚会覆盖该改动";
+                default:
+                    return state.ToString();
+            }
+        }
+
+        private static void QuarantineStaleJournal(
+            string journalPath,
+            JournalFileState talkState, JournalFileState optionState)
+        {
+            string directory = Path.GetDirectoryName(journalPath) ?? string.Empty;
+            string staleName = ".storygraph.transaction.stale-"
+                               + Guid.NewGuid().ToString("N") + ".json";
+            // 改名失败（占用/权限）冒泡给上层继续阻塞：放行必须以日志确实离开
+            // 待恢复位置为前提，否则每次打开都会再撞同一份日志。隔离名不以
+            // Cfg.json 结尾，不会被 ModCtrl 的 *Cfg.json 通配加载。
+            File.Move(journalPath, Path.Combine(directory, staleName));
+            Plugin.Log?.LogWarning(
+                "[StoryGraph.Edit.Recover] 旧保存事务已确认无法自动恢复，"
+                + "日志已隔离为 " + staleName + " 并放行本次加载。判定："
+                + "TalkCfg.json " + DescribeJournalFileState(talkState)
+                + "；OptionCfg.json " + DescribeJournalFileState(optionState)
+                + "。相关 .storygraph.tx.*.bak 事务备份仍保留在原目录，"
+                + "保存前的版本另见同目录 .storygraph.bak（如存在）。" );
+            try
+            {
+                // 走路由：保存前防御性复查可能在剧情图 Overlay 激活期间触发，
+                // 原版 Toast 会被整体盖住；非图路径由路由回落原版 Toast。
+                StoryGraphToastRouter.Show(
+                    "检测到无法自动恢复的旧保存事务，已隔离放行；详情与备份位置见日志。" );
+            }
+            catch { }
+        }
+
+        private static void RestoreJournalFile(JournalFile file)
+        {
+            JournalFileState state = ClassifyJournalFile(file);
+            if (state == JournalFileState.AtOriginal) return; // 此文件尚未替换。
+            if (state != JournalFileState.Restorable)
                 throw new IOException(
-                    "未完成事务之后配置又被其它工具修改，自动恢复不会覆盖该改动："
-                    + file.Path);
+                    "回滚前配置状态再次变化（" + DescribeJournalFileState(state)
+                    + "），本次不回滚：" + file.Path);
             if (file.Existed)
             {
-                if (!File.Exists(file.TransactionBackup))
-                    throw new FileNotFoundException(
-                        "缺少恢复所需的事务备份", file.TransactionBackup);
                 File.Copy(file.TransactionBackup, file.Path, true);
+                // 调用方随即删除日志与 .tx 备份（NTFS 元数据操作先于缓存数据
+                // 落盘），恢复内容必须先真实推到磁盘，二次断电才不会撕裂。
+                FlushFileToDisk(file.Path);
             }
             else if (File.Exists(file.Path))
             {
                 File.Delete(file.Path);
             }
-            if (!FingerprintEquals(CaptureFingerprint(file.Path), original))
+            if (!FingerprintEquals(CaptureFingerprint(file.Path),
+                    FingerprintFromJournal(file, false)))
                 throw new IOException("恢复后的配置指纹与事务旧版本不一致：" + file.Path);
         }
 
@@ -4485,6 +5227,44 @@ namespace StudentAgeEditorPlus.Patches
             if (string.IsNullOrWhiteSpace(path)) return;
             try { if (File.Exists(path)) File.Delete(path); }
             catch { /* 清理失败保留文件，不能覆盖真正的提交/回滚结果。 */ }
+        }
+
+        /// <summary>
+        /// 事务里先行写下的临时/日志文件必须真实落盘（WriteThrough+Flush(true)，
+        /// 与 AtomicFilePairTransaction.WriteDurable 同法）：普通 WriteAllText 只
+        /// 进 OS 缓存，断电后日志可能指向不存在的内容。UTF8 无 BOM。
+        /// </summary>
+        private static void WriteDurable(string path, string content)
+        {
+            using (var stream = new FileStream(
+                path,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                4096,
+                FileOptions.WriteThrough))
+            using (var writer = new StreamWriter(
+                stream, new UTF8Encoding(false), 4096, true))
+            {
+                writer.Write(content ?? string.Empty);
+                writer.Flush();
+                stream.Flush(true);
+            }
+        }
+
+        /// <summary>File.Copy 产物重开写句柄 Flush(true)，把整份内容推到磁盘。</summary>
+        private static void FlushFileToDisk(string path)
+        {
+            using (var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.ReadWrite,
+                FileShare.Read,
+                4096,
+                FileOptions.WriteThrough))
+            {
+                stream.Flush(true);
+            }
         }
 
         private static void Normalize(TalkCfg value)
