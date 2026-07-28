@@ -51,6 +51,32 @@ namespace StudentAgeEditorPlus.Patches
     }
 
     /// <summary>
+    /// 单条对话的块级公式 screenEffect 编排计划（设计 §5）。CgId 大于 0 表示挂载
+    /// [4019, CgId]；等于 0 表示移除（对话可能已被删除，此时只回收自动补写的
+    /// [4017]）。PreviousAutoCloseTalkIds 是上次保存自动补写 [4017] 的下一句
+    /// （来自边车登记）；Applied/Skipped 由 TryApplyFormulaScreenEffects 填写，
+    /// 调用方据此回写边车并提示作者。
+    ///
+    /// 本类型与 TryApplyFormulaScreenEffects 是 StudentAgeLatex 插件经反射
+    /// 编排块级公式的唯二入口；字段名是冻结契约，改名会让乳胶静默降级。
+    /// </summary>
+    internal sealed class StoryGraphFormulaEffectPlan
+    {
+        internal int TalkId;
+        internal int CgId;
+        internal bool AutoClose = true;
+        internal List<int> PreviousAutoCloseTalkIds = new List<int>();
+        internal readonly List<int> AppliedAutoCloseTalkIds = new List<int>();
+        internal readonly List<int> SkippedAutoCloseTalkIds = new List<int>();
+        /// <summary>后继在草稿之外（跨事件/外部跳转）：无法补写 [4017]，公式图会
+        /// 被带出本事件（L3-1）。调用方据此给出与「已有画面指令」不同的提示。</summary>
+        internal readonly List<int> ExternalSuccessorTalkIds = new List<int>();
+        /// <summary>后继是汇合点，还能被另一条作者自己的 CG/漫画线经运行边到达：
+        /// 补写全局 [4017] 会掐断那条线，因此跳过（L3-4）。</summary>
+        internal readonly List<int> MergeSkippedTalkIds = new List<int>();
+    }
+
+    /// <summary>
     /// 与 ModEvtEditView 实时对象隔离的编辑草稿。
     ///
     /// 每次作者操作前保存整份深拷贝快照。事件配置通常只有几十到数百项，作者操作频率又远低于
@@ -1363,6 +1389,424 @@ namespace StudentAgeEditorPlus.Patches
             Talks = oldTalks;
             Options = oldOptions;
             return false;
+        }
+
+        // 公式专用 cgId 段位常量与谓词（与 StudentAgeTypeset 库 FormulaAssetService
+        // 同口径的自含副本）：EditorPlus 不引用 Typeset，段位判定必须本地实现，
+        // 否则块级编排会引入渲染/物化链路的运行时依赖。改动段位时两侧同步。
+        private const int FormulaCgIdBase = 3000000;
+        private const int FormulaCgIdMax = 9999999;
+        private const int LegacyFormulaCgIdBase = 100000000;
+        private const int LegacyFormulaCgIdMax = 299999999;
+
+        // screenEffect 码位。4019（ShowMiniCG）与 4017（CloseCG）分别对应挂载公式
+        // 画面与关闭 CG；块级编排写入/回收 [4019,cgId] 与自动补写的 [4017]。
+        private const int FormulaShowMiniCgCode = 4019;
+        private const int FormulaCloseCgCode = 4017;
+
+        private static bool IsFormulaCgId(int id)
+        {
+            return id >= FormulaCgIdBase && id <= FormulaCgIdMax;
+        }
+
+        private static bool IsLegacyFormulaCgId(int id)
+        {
+            return id >= LegacyFormulaCgIdBase && id <= LegacyFormulaCgIdMax;
+        }
+
+        /// <summary>新旧两段并集：回收/识别路径必须用，旧段只识别不再分配。</summary>
+        private static bool IsAnyFormulaCgId(int id)
+        {
+            return IsFormulaCgId(id) || IsLegacyFormulaCgId(id);
+        }
+
+        /// <summary>cgId 能否过玩家侧取值链路：float 二进制无损 + MessagePack G7
+        /// 文本无损（整表回写）双关。显式 G7 而非默认 ToString()，避免运行时口径漂移。</summary>
+        private static bool IsScreenEffectSafeCgId(int id)
+        {
+            float single = id;
+            if ((int)single != id) return false;
+            string text = single.ToString("G7", System.Globalization.CultureInfo.InvariantCulture);
+            float parsed;
+            if (!float.TryParse(text, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out parsed)) return false;
+            return (int)parsed == id;
+        }
+
+        /// <summary>
+        /// 认新旧两段：已落盘的旧段（1 亿段）[4019,id] 也必须被认成「公式画面指令」，
+        /// 否则迁移时会被当成作者原有指令而拒绝覆盖，坏编号永远留在盘上。
+        /// </summary>
+        private static bool IsFormulaCgIdValue(int id)
+        {
+            return IsAnyFormulaCgId(id);
+        }
+
+        private static bool IsEmptyScreenEffect(List<float> effect)
+        {
+            return effect == null || effect.Count == 0;
+        }
+
+        /// <summary>该对话当前挂的是否为公式专用段的 MiniCG 指令（可安全覆盖/回收）。</summary>
+        private static bool IsFormulaScreenEffect(List<float> effect)
+        {
+            return effect != null && effect.Count >= 2
+                   && (int)effect[0] == FormulaShowMiniCgCode
+                   && IsFormulaCgIdValue((int)effect[1]);
+        }
+
+        /// <summary>仍保持自动补写原样（恰好 [4017]）的画面指令才允许回收。</summary>
+        private static bool IsExactlyCloseCg(List<float> effect)
+        {
+            return effect != null && effect.Count == 1
+                   && (int)effect[0] == FormulaCloseCgCode;
+        }
+
+        private static bool ScreenEffectEquals(List<float> left, List<float> right)
+        {
+            if (IsEmptyScreenEffect(left) && IsEmptyScreenEffect(right)) return true;
+            if (IsEmptyScreenEffect(left) || IsEmptyScreenEffect(right)) return false;
+            if (left.Count != right.Count) return false;
+            for (int i = 0; i < left.Count; i++)
+                if (left[i] != right[i]) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// 「下一句」目标集：nextTalk / nextTalk2 中大于 1（0=结束、1=等选项），
+        /// 外加该句每个选项的 talkId / talkId2 前两个（性别）槽位中大于 0 的目标。
+        ///
+        /// 选项跳转在游戏侧就是真正的下一句：SelectOption 命中 nextTalkId>0 时走
+        /// ShowTalk（CommonEvtMgr.cs:216-223），NewTalkView 已打开时只 Send(1,…)
+        /// 复用同一视图实例 → RefreshTalk，isShowingCG 保持 true、立绘被
+        /// group_role.SetActive(!isShowingCG) 关掉（NewTalkView.cs:381）。漏掉这条
+        /// 来源就等于「选完选项后公式图一路挂到事件结束」（L3-1）。
+        ///
+        /// 不在草稿里的后继（跨事件/外部跳转）不再静默丢弃：写进 external，由调用方
+        /// 转成告警，让作者知道公式图会被带出本事件。
+        /// </summary>
+        private List<int> CollectSuccessorTalkIds(TalkCfg talk, List<int> external = null)
+        {
+            var result = new List<int>();
+            if (talk == null) return result;
+            var seen = new HashSet<int>();
+            foreach (List<int> slots in new[] { talk.nextTalk, talk.nextTalk2 })
+            {
+                if (slots == null) continue;
+                foreach (int id in slots)
+                {
+                    if (id <= 1 || id == talk.id || !seen.Add(id)) continue;
+                    if (FindTalk(id) != null) result.Add(id);
+                    else if (external != null && !external.Contains(id)) external.Add(id);
+                }
+            }
+            if (talk.option == null) return result;
+            foreach (int optionId in talk.option)
+            {
+                if (optionId <= 0) continue;
+                OptionCfg option = FindOption(optionId);
+                if (option == null) continue;
+                foreach (List<int> slots in new[] { option.talkId, option.talkId2 })
+                {
+                    if (slots == null) continue;
+                    // 运行时只读前两个（性别）槽位，阈值 >0：与
+                    // EnqueueRuntimeTalkSlots / RuntimeGenderValue 同口径。
+                    int count = Math.Min(slots.Count, 2);
+                    for (int i = 0; i < count; i++)
+                    {
+                        int id = slots[i];
+                        if (id <= 0 || id == talk.id || !seen.Add(id)) continue;
+                        if (FindTalk(id) != null) result.Add(id);
+                        else if (external != null && !external.Contains(id))
+                            external.Add(id);
+                    }
+                }
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 该对话此刻（按目标态）是否是一条覆盖层的开始节点。与
+        /// StoryGraphCgFlowAnalyzer.ScreenCode 同口径：正文为空的整句会被游戏跳过，
+        /// 其画面指令不执行，因此不算开始节点。
+        /// </summary>
+        private static bool StartsOverlay(TalkCfg talk, List<float> effect)
+        {
+            if (talk == null || string.IsNullOrWhiteSpace(talk.content)) return false;
+            if (effect == null || effect.Count == 0) return false;
+            int code = (int)effect[0];
+            return code == 4015 || code == 4016 || code == FormulaShowMiniCgCode;
+        }
+
+        /// <summary>
+        /// 从一个覆盖层开始节点出发、沿运行边能覆盖到的对话集合（不含起点本身）。
+        /// 与 StoryGraphCgFlowAnalyzer.CollectOverlayEndpoints 相同的剪枝：遇到
+        /// 「关闭 CG」或另一个覆盖层开始节点就停止——那之后的画面已不属于本条线。
+        /// </summary>
+        private HashSet<int> CollectOverlayCoveredTalkIds(
+            TalkCfg start, Func<TalkCfg, List<float>> effectiveOf)
+        {
+            var covered = new HashSet<int>();
+            if (start == null) return covered;
+            var visited = new HashSet<int> { start.id };
+            var queue = new Queue<TalkCfg>();
+            queue.Enqueue(start);
+            while (queue.Count > 0)
+            {
+                TalkCfg current = queue.Dequeue();
+                foreach (int nextId in CollectSuccessorTalkIds(current))
+                {
+                    if (!visited.Add(nextId)) continue;
+                    TalkCfg next = FindTalk(nextId);
+                    if (next == null) continue;
+                    covered.Add(nextId);
+                    List<float> state = effectiveOf(next);
+                    if (state != null && state.Count > 0
+                        && (int)state[0] == FormulaCloseCgCode) continue;
+                    if (StartsOverlay(next, state)) continue;
+                    queue.Enqueue(next);
+                }
+            }
+            return covered;
+        }
+
+        /// <summary>
+        /// 块级公式的 screenEffect 编排（设计 §5）：先做与目标态无关的校验，再按
+        /// 「先回收、后挂载」两阶段计算目标状态（「已有其它画面指令」按回收后的目标
+        /// 态判定），最后一次性写进草稿。挂载写 [4019, cgId]；自动关闭对每个下一句
+        /// （含选项分支）补写 [4017] 并登记进 plan.AppliedAutoCloseTalkIds；回收只清
+        /// 除仍保持恰好 [4017] 原样的自动条目，绝不动作者手工配置的画面指令。
+        /// 全过程只在最后成功时改动草稿，任何返回 false 的出口都不留半改状态。
+        /// 该变更是派生态、不入撤销栈（见 MutateWithoutHistory）。
+        /// changed 为 false 表示草稿本就处于目标状态。
+        /// </summary>
+        internal bool TryApplyFormulaScreenEffects(
+            IList<StoryGraphFormulaEffectPlan> plans,
+            out bool changed, out string message)
+        {
+            changed = false;
+            message = null;
+            if (plans == null || plans.Count == 0)
+            {
+                message = "没有需要编排的块级公式。";
+                return true;
+            }
+
+            // 本批要挂载 [4019] 的对话：它们既是「阶段 1 可以放心回收旧 4017」的
+            // 依据，也是阶段 2 里「下一句自己也有公式」这一干净交接场景的标记。
+            var mountTargets = new HashSet<int>();
+            foreach (StoryGraphFormulaEffectPlan plan in plans)
+                if (plan != null && plan.CgId > 0) mountTargets.Add(plan.TalkId);
+
+            foreach (StoryGraphFormulaEffectPlan plan in plans)
+            {
+                if (plan == null) continue;
+                plan.AppliedAutoCloseTalkIds.Clear();
+                plan.SkippedAutoCloseTalkIds.Clear();
+                plan.ExternalSuccessorTalkIds.Clear();
+                plan.MergeSkippedTalkIds.Clear();
+                if (plan.CgId <= 0) continue; // 移除计划容忍对话已被删除
+                TalkCfg talk = FindTalk(plan.TalkId);
+                if (talk == null)
+                {
+                    message = "对话 " + plan.TalkId
+                              + " 已不在当前草稿中，无法挂载块级公式。";
+                    return false;
+                }
+                // 新写入必须落在当前段（旧段只识别、不再分配），且必须经得起玩家侧
+                // 取值链路（二进制 + MessagePack G7 双关，见 IsScreenEffectSafeCgId）。
+                // 直接调用物化侧的同一判定，避免两处口径漂移。
+                if (!IsFormulaCgId(plan.CgId)
+                    || !IsScreenEffectSafeCgId(plan.CgId))
+                {
+                    message = "对话 " + plan.TalkId + " 的公式 CG 编号 "
+                              + plan.CgId + " 不在公式专用段，或无法安全经过"
+                              + "原版编辑器的保存链路（会被写坏成另一个编号）。";
+                    return false;
+                }
+                if (string.IsNullOrWhiteSpace(talk.content))
+                {
+                    message = "对话 " + plan.TalkId
+                              + " 的正文为空：游戏会直接跳过整句，块级公式不会显示。"
+                              + "请先填写正文，或移除该句的块级公式。";
+                    return false;
+                }
+            }
+
+            // 目标状态按引用聚合：同一目标可先被回收、再被其它公式重新补写。
+            var desired = new Dictionary<TalkCfg, List<float>>();
+            Func<TalkCfg, List<float>> effectiveOf = talk =>
+            {
+                List<float> value;
+                return desired.TryGetValue(talk, out value)
+                    ? value
+                    : talk.screenEffect;
+            };
+
+            // 阶段 1：回收。移除计划回收全部旧登记；挂载计划只回收不再是
+            // 下一句（或自动关闭已关掉）的旧登记，仍有效的由阶段 2 重新持有。
+            foreach (StoryGraphFormulaEffectPlan plan in plans)
+            {
+                if (plan == null) continue;
+                HashSet<int> keep = null;
+                if (plan.CgId > 0 && plan.AutoClose)
+                {
+                    TalkCfg owner = FindTalk(plan.TalkId);
+                    keep = new HashSet<int>(CollectSuccessorTalkIds(owner));
+                    // 本轮自己也要挂公式的后继不属于「仍然有效的自动关闭」：
+                    // 它的 [4017] 会被阶段 2 覆写成 [4019]，先回收掉才能让下面的
+                    // 校验看到真实目标态，否则连续两句挂公式会被自伤式拦下（L3-3）。
+                    keep.ExceptWith(mountTargets);
+                }
+                if (plan.PreviousAutoCloseTalkIds != null)
+                {
+                    foreach (int prevId in plan.PreviousAutoCloseTalkIds)
+                    {
+                        if (keep != null && keep.Contains(prevId)) continue;
+                        TalkCfg previous = FindTalk(prevId);
+                        if (previous != null && IsExactlyCloseCg(effectiveOf(previous)))
+                            desired[previous] = new List<float>();
+                    }
+                }
+                if (plan.CgId == 0)
+                {
+                    TalkCfg removed = FindTalk(plan.TalkId);
+                    if (removed != null && IsFormulaScreenEffect(effectiveOf(removed)))
+                        desired[removed] = new List<float>();
+                }
+            }
+
+            // 「已有其它画面指令」的校验必须按回收后的目标态判定，而不是按草稿当前
+            // 态：上一轮由本插件补写、这一轮本就要被覆盖的 [4017] 不该拦下保存
+            // （L3-3）。此处 desired 只是本地字典，返回 false 不改动任何草稿数据。
+            foreach (StoryGraphFormulaEffectPlan plan in plans)
+            {
+                if (plan == null || plan.CgId <= 0) continue;
+                TalkCfg talk = FindTalk(plan.TalkId);
+                if (talk == null) continue;
+                List<float> state = effectiveOf(talk);
+                if (IsEmptyScreenEffect(state) || IsFormulaScreenEffect(state)) continue;
+                message = "对话 " + plan.TalkId + " 已有其它画面指令（screenEffect "
+                          + (int)state[0]
+                          + "）：一句只有一个画面指令槽位。请先在“画面”页清除它，"
+                          + "或移除该句的块级公式。";
+                return false;
+            }
+
+            // 汇合点判定用的「作者自己的覆盖层起点」：本批挂载目标是插件自己的公式
+            // 线，两条公式线汇合时照常补写 [4017]（L3-4 只针对会被掐断的他人线）。
+            var overlayCovered = new Dictionary<int, HashSet<int>>();
+            Func<int, HashSet<int>> coveredFrom = startId =>
+            {
+                HashSet<int> cached;
+                if (overlayCovered.TryGetValue(startId, out cached)) return cached;
+                cached = CollectOverlayCoveredTalkIds(FindTalk(startId), effectiveOf);
+                overlayCovered[startId] = cached;
+                return cached;
+            };
+            var foreignOverlayStarts = new List<int>();
+            foreach (TalkCfg candidate in Talks)
+            {
+                if (candidate == null || mountTargets.Contains(candidate.id)) continue;
+                if (StartsOverlay(candidate, effectiveOf(candidate)))
+                    foreignOverlayStarts.Add(candidate.id);
+            }
+
+            // 阶段 2：挂载 + 自动关闭。
+            foreach (StoryGraphFormulaEffectPlan plan in plans)
+            {
+                if (plan == null || plan.CgId <= 0) continue;
+                TalkCfg talk = FindTalk(plan.TalkId);
+                desired[talk] = new List<float>
+                {
+                    FormulaShowMiniCgCode, plan.CgId,
+                };
+                if (!plan.AutoClose) continue;
+                foreach (int nextId in CollectSuccessorTalkIds(
+                             talk, plan.ExternalSuccessorTalkIds))
+                {
+                    TalkCfg next = FindTalk(nextId);
+                    if (next == null) continue;
+                    // 下一句自己也挂公式：它的 [4019] 直接取代本句画面，既不需要
+                    // 4017，也不能把它记进本计划的自动关闭登记（否则下次移除本句
+                    // 公式时会去「回收」其实属于对方的画面指令）。
+                    if (mountTargets.Contains(nextId)) continue;
+                    List<float> state = effectiveOf(next);
+                    if (IsEmptyScreenEffect(state))
+                    {
+                        if (string.IsNullOrWhiteSpace(next.content))
+                        {
+                            // 空正文整句被跳过，写 [4017] 只会触发校验失败。
+                            plan.SkippedAutoCloseTalkIds.Add(nextId);
+                            continue;
+                        }
+                        // 4017 是全局关闭（NewTalkView.cs:917-931 HideCGComic 无差别
+                        // 复位）：汇合点上补写会把作者另一条 CG 线一起掐断，宁可
+                        // 少写一条自动关闭也不动作者已有的 CG 时序（L3-4）。
+                        bool reachedByForeignOverlay = false;
+                        foreach (int startId in foreignOverlayStarts)
+                        {
+                            if (startId == plan.TalkId) continue;
+                            if (!coveredFrom(startId).Contains(nextId)) continue;
+                            reachedByForeignOverlay = true;
+                            break;
+                        }
+                        if (reachedByForeignOverlay)
+                        {
+                            plan.MergeSkippedTalkIds.Add(nextId);
+                            continue;
+                        }
+                        desired[next] = new List<float> { FormulaCloseCgCode };
+                        plan.AppliedAutoCloseTalkIds.Add(nextId);
+                    }
+                    else if ((int)state[0] == FormulaCloseCgCode)
+                    {
+                        // 已是关闭指令：仅当上次由本计划补写时继续持有登记；
+                        // 作者手写的 4017 不登记也不告警（本就会关闭）。
+                        if (plan.PreviousAutoCloseTalkIds != null
+                            && plan.PreviousAutoCloseTalkIds.Contains(nextId)
+                            && IsExactlyCloseCg(state))
+                            plan.AppliedAutoCloseTalkIds.Add(nextId);
+                    }
+                    else
+                    {
+                        plan.SkippedAutoCloseTalkIds.Add(nextId);
+                    }
+                }
+            }
+
+            // 登记复核：只有最终目标态仍恰为 [4017] 的条目才算「本计划补写的自动
+            // 关闭」。多条计划交叉覆盖时，这一步防止把别人的画面指令记成自己的。
+            foreach (StoryGraphFormulaEffectPlan plan in plans)
+            {
+                if (plan == null || plan.AppliedAutoCloseTalkIds.Count == 0) continue;
+                plan.AppliedAutoCloseTalkIds.RemoveAll(id =>
+                {
+                    TalkCfg applied = FindTalk(id);
+                    return applied == null || !IsExactlyCloseCg(effectiveOf(applied));
+                });
+            }
+
+            var changes = new List<KeyValuePair<TalkCfg, List<float>>>();
+            foreach (KeyValuePair<TalkCfg, List<float>> pair in desired)
+                if (!ScreenEffectEquals(pair.Key.screenEffect, pair.Value))
+                    changes.Add(pair);
+            if (changes.Count == 0)
+            {
+                message = "块级公式画面指令没有变化。";
+                return true;
+            }
+
+            // 派生态，不入撤销栈：块级公式画面指令是每次保存按边车登记重算的
+            // 幂等结果，不是作者可见的编辑步。压会话 _undo 而窗口统一时间线
+            // （_editActionTimeline）不记账会让保存失败后的 Ctrl+Z 撤错东西，并把
+            // 作者真正那次操作的撤销位永久吃掉（LTX-D1-01）。
+            MutateWithoutHistory("同步块级公式画面指令（" + changes.Count + " 处）");
+            foreach (KeyValuePair<TalkCfg, List<float>> pair in changes)
+                pair.Key.screenEffect = pair.Value;
+            changed = true;
+            message = "已同步 " + changes.Count + " 处块级公式画面指令。";
+            return true;
         }
 
         internal bool TryReplaceTalk(
@@ -3230,6 +3674,15 @@ namespace StudentAgeEditorPlus.Patches
                 Description = description,
             });
             _redo.Clear();
+            Dirty = true;
+            LastAction = description;
+        }
+
+        /// <summary>块级公式 screenEffect 编排等派生态变更用：标脏但不入撤销栈——
+        /// 该变更由保存编排从边车登记重算，不是作者的独立编辑步骤。</summary>
+        private void MutateWithoutHistory(string description)
+        {
+            _liveFieldEditKey = null;
             Dirty = true;
             LastAction = description;
         }
