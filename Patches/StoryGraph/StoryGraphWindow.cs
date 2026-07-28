@@ -6810,6 +6810,9 @@ namespace StudentAgeEditorPlus.Patches
                 // 共享选项直接来自全局 Cfg.OptionCfgMap，就地改写等于污染本局全局配置。
                 talks = StoryGraphEditSession.CloneTalks(talks);
                 options = StoryGraphEditSession.CloneOptions(options);
+                // 可选 LaTeX 探针（StudentAgeLatex 插件在场时挂接）：会话构造前把
+                // 磁盘上的烘焙成品换回作者的 $ 源码。深拷贝草稿就地改写，缺席时零成本。
+                StoryGraphLatexProbe.SwapbackSource?.Invoke(modRoot, eventId, talks, options);
                 _editSession = new StoryGraphEditSession(
                     talks, options, eventId, entries, entriesKnown, modRoot,
                     mergedOptionIds);
@@ -8056,6 +8059,18 @@ namespace StudentAgeEditorPlus.Patches
             {
                 SetEditFeedback("无法保存：" + error, true);
                 return;
+            }
+
+            // 可选 LaTeX 探针：行内烘焙 + 块级公式物化落在会话草稿上，写盘仍由
+            // 本侧原子事务负责。探针返回非空即整体拦下（草稿与磁盘均未改，属合法中止）。
+            if (StoryGraphLatexProbe.PrepareForSave != null)
+            {
+                string latexBlock = StoryGraphLatexProbe.PrepareForSave(_editSession);
+                if (!string.IsNullOrEmpty(latexBlock))
+                {
+                    SetEditFeedback(latexBlock, true);
+                    return;
+                }
             }
 
             int unclosedCg = _model != null ? _model.CgUnclosedCount : 0;
