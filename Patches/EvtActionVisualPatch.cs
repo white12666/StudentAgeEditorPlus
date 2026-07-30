@@ -1456,6 +1456,29 @@ namespace StudentAgeEditorPlus.Patches
             IEnumerable<TalkCfg> talkSource,
             IDictionary<int, OptionCfg> optionSource)
         {
+            return TryOpenPreviewCore(
+                view, requestedTalk, talkSource, optionSource, null);
+        }
+
+        internal static bool TryOpenStoryGraphPreview(
+            ModEvtEditView view,
+            TalkCfg requestedTalk,
+            IEnumerable<TalkCfg> talkSource,
+            IDictionary<int, OptionCfg> optionSource,
+            StoryGraphEditSession storyGraphSession)
+        {
+            return TryOpenPreviewCore(
+                view, requestedTalk, talkSource, optionSource,
+                storyGraphSession);
+        }
+
+        private static bool TryOpenPreviewCore(
+            ModEvtEditView view,
+            TalkCfg requestedTalk,
+            IEnumerable<TalkCfg> talkSource,
+            IDictionary<int, OptionCfg> optionSource,
+            StoryGraphEditSession storyGraphSession)
+        {
             try
             {
                 // 失败提示统一走路由：从剧情图进入预览时画布刚被暂隐、
@@ -1485,7 +1508,23 @@ namespace StudentAgeEditorPlus.Patches
                 var talkMap = new Dictionary<int, TalkCfg>();
                 foreach (var talk in talkList)
                 {
-                    if (talk != null) talkMap[talk.id] = ShallowCopyTalk(talk);
+                    if (talk == null) continue;
+                    TalkCfg previewTalk = ShallowCopyTalk(talk);
+                    talkMap[talk.id] = previewTalk;
+                    if (storyGraphSession != null
+                        && StoryGraphLatexProbe.BindAuthorPreview != null)
+                    {
+                        try
+                        {
+                            StoryGraphLatexProbe.BindAuthorPreview(
+                                storyGraphSession, previewTalk);
+                        }
+                        catch (Exception e)
+                        {
+                            Plugin.Log?.LogWarning(
+                                "[EvtTalkPreview.Latex] 会话预览绑定失败：" + e.Message);
+                        }
+                    }
                 }
 
                 Dictionary<int, OptionCfg> optionCfgsRaw = optionSource != null

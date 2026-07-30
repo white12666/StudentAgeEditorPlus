@@ -835,6 +835,7 @@ namespace StudentAgeEditorPlus.Patches
                 WatchScreenResize();
                 UpdateEditConfirmationState();
                 UpdateGraphToast();
+                UpdateLatexPreview();
             }
             catch (Exception e) { LogInputErrorThrottled(e); }
             if (!_open || _canvasRoot == null) return;
@@ -2313,6 +2314,64 @@ namespace StudentAgeEditorPlus.Patches
             return input;
         }
 
+        private void AttachInspectorContentScroll(InputField input)
+        {
+            if (input == null) return;
+            Transform existing = input.transform.Find("VerticalScrollbar");
+            GameObject root = existing != null ? existing.gameObject : null;
+            if (root == null)
+            {
+                root = CreateUIObject("VerticalScrollbar", input.transform);
+                Image track = root.AddComponent<Image>();
+                track.color = new Color(0.72f, 0.62f, 0.47f, 0.38f);
+                track.raycastTarget = true;
+                ApplySprite(track, _chipSprite);
+                root.AddComponent<CanvasGroup>();
+
+                GameObject slide = CreateUIObject(
+                    "Handle Slide Area", root.transform);
+                GameObject handle = CreateUIObject("Handle", slide.transform);
+                Image handleImage = handle.AddComponent<Image>();
+                handleImage.color = HexColor("A66D3F");
+                handleImage.raycastTarget = true;
+                ApplySprite(handleImage, _chipSprite);
+            }
+
+            RectTransform rect = (RectTransform)root.transform;
+            rect.anchorMin = new Vector2(1f, 0f);
+            rect.anchorMax = new Vector2(1f, 1f);
+            rect.pivot = new Vector2(1f, 0.5f);
+            rect.offsetMin = new Vector2(-13f, 6f);
+            rect.offsetMax = new Vector2(-5f, -6f);
+            root.transform.SetAsLastSibling();
+
+            RectTransform slideRect =
+                root.transform.Find("Handle Slide Area") as RectTransform;
+            RectTransform handleRect = slideRect != null
+                ? slideRect.Find("Handle") as RectTransform : null;
+            if (slideRect == null || handleRect == null) return;
+            Stretch(slideRect, 1f, 1f, 1f, 1f);
+            Stretch(handleRect, 0f, 0f, 0f, 0f);
+
+            Scrollbar scrollbar = root.GetComponent<Scrollbar>();
+            if (scrollbar == null) scrollbar = root.AddComponent<Scrollbar>();
+            scrollbar.handleRect = handleRect;
+            scrollbar.targetGraphic = handleRect.GetComponent<Image>();
+            scrollbar.direction = Scrollbar.Direction.TopToBottom;
+            scrollbar.numberOfSteps = 0;
+            scrollbar.navigation = new Navigation
+            {
+                mode = Navigation.Mode.None,
+            };
+
+            CanvasGroup canvas = root.GetComponent<CanvasGroup>();
+            StoryGraphInputScroll binder =
+                input.GetComponent<StoryGraphInputScroll>();
+            if (binder == null)
+                binder = input.gameObject.AddComponent<StoryGraphInputScroll>();
+            binder.Bind(input, scrollbar, canvas, _inspectorScroll);
+        }
+
         private void ClearInspectorReferences()
         {
             _inspectorRoot = null;
@@ -2328,6 +2387,7 @@ namespace StudentAgeEditorPlus.Patches
             _inspectorJsonInput = null;
             _inspectorTagRow = null;
             _inspectorCloseButton = null;
+            ClearLatexPreviewReferences();
             ClearPerformanceInspectorReferences();
         }
 
@@ -2341,6 +2401,7 @@ namespace StudentAgeEditorPlus.Patches
             _inspectorShowingHelp = false;
             _inspectorBasicPreviewDirty = false;
             RefreshPerformanceInspector();
+            RefreshLatexPreviewFromSelection(false);
             StoryGraphWorkspace.GroupData selectedGroup =
                 _workspace != null && !string.IsNullOrEmpty(_selectedGroupId)
                     ? _workspace.FindGroup(_selectedGroupId)
@@ -2494,6 +2555,9 @@ namespace StudentAgeEditorPlus.Patches
             _settingInspectorText = true;
             try { input.SetTextWithoutNotify(value ?? string.Empty); }
             finally { _settingInspectorText = false; }
+            StoryGraphInputScroll scroll =
+                input.GetComponent<StoryGraphInputScroll>();
+            if (scroll != null) scroll.ResetToTop();
         }
 
         private InputField FocusedInspectorInput()
@@ -2583,6 +2647,8 @@ namespace StudentAgeEditorPlus.Patches
                     out historyRecorded, out message);
             }
             if (!changed) return;
+
+            ScheduleLatexPreview(_inspectorContentInput.text);
 
             if (historyRecorded)
             {
@@ -6413,6 +6479,9 @@ namespace StudentAgeEditorPlus.Patches
             if (_editMode)
             {
                 FinalizeFocusedInspectorInput();
+                // “预览本句”与保存一样越过 250ms 防抖：若最新正文能成功实时
+                // 渲染，就立即把同一成品绑定给本次作者预览；失败则保留旧快照。
+                FlushPendingLatexPreview();
                 if (_editSession == null)
                 {
                     SetEditFeedback("剧情图草稿已失效，无法预览本句。", true);
@@ -6426,8 +6495,11 @@ namespace StudentAgeEditorPlus.Patches
             // 完全盖住。这里只暂停显示和输入，编辑草稿仍留在内存中。
             if (!SuspendForTalkPreview()) return;
             StoryGraphPreviewReturnBridge.Register(this);
-            bool opened = EvtTalkPreviewPatch.TryOpenPreview(
-                _view, talk, talks, options);
+            bool opened = _editMode
+                ? EvtTalkPreviewPatch.TryOpenStoryGraphPreview(
+                    _view, talk, talks, options, _editSession)
+                : EvtTalkPreviewPatch.TryOpenPreview(
+                    _view, talk, talks, options);
             if (!opened)
                 StoryGraphPreviewReturnBridge.Cancel(this);
         }
@@ -8044,7 +8116,9 @@ namespace StudentAgeEditorPlus.Patches
         private void SaveEditSession()
         {
             if (!_editMode || _editSession == null || _savingEdit) return;
+            bool latexPrepared = false;
             FinalizeFocusedInspectorInput();
+            FlushPendingLatexPreview();
             // screenEffect 与高级 JSON 都支持逐字热应用。保存前重建一次模型，
             // 确保 CG 路径诊断对应当前最后一个合法草稿值。
             RefreshGraph(false);
@@ -8059,18 +8133,6 @@ namespace StudentAgeEditorPlus.Patches
             {
                 SetEditFeedback("无法保存：" + error, true);
                 return;
-            }
-
-            // 可选 LaTeX 探针：行内烘焙 + 块级公式物化落在会话草稿上，写盘仍由
-            // 本侧原子事务负责。探针返回非空即整体拦下（草稿与磁盘均未改，属合法中止）。
-            if (StoryGraphLatexProbe.PrepareForSave != null)
-            {
-                string latexBlock = StoryGraphLatexProbe.PrepareForSave(_editSession);
-                if (!string.IsNullOrEmpty(latexBlock))
-                {
-                    SetEditFeedback(latexBlock, true);
-                    return;
-                }
             }
 
             int unclosedCg = _model != null ? _model.CgUnclosedCount : 0;
@@ -8091,6 +8153,20 @@ namespace StudentAgeEditorPlus.Patches
                 return;
             }
             _saveCgConfirmUntil = 0f;
+
+            // 只有所有交互式确认均通过后才让 LaTeX 准备保存候选；否则第一次
+            // “仍要保存”确认点击也会提前物化/改写会话。真正边车提交仍在下方
+            // TrySave 成功后的 CompleteSave(true)。
+            if (StoryGraphLatexProbe.PrepareForSave != null)
+            {
+                string latexBlock = StoryGraphLatexProbe.PrepareForSave(_editSession);
+                if (!string.IsNullOrEmpty(latexBlock))
+                {
+                    SetEditFeedback(latexBlock, true);
+                    return;
+                }
+                latexPrepared = true;
+            }
             _savingEdit = true;
             UpdateEditControls();
             try
@@ -8151,6 +8227,27 @@ namespace StudentAgeEditorPlus.Patches
                     return;
                 }
 
+                if (latexPrepared)
+                {
+                    NotifyLatexSaveCompletion(_editSession, true);
+                    latexPrepared = false;
+                    // CompleteSave 会把会话正文从落盘烘焙产物恢复成作者源码；
+                    // 同步回原版编辑器内存，避免切回表单时看到 TMP 标签成品。
+                    List<TalkCfg> authorTalks = StoryGraphEditSession.CloneTalks(
+                        _editSession.Talks);
+                    Dictionary<int, OptionCfg> authorOptions =
+                        StoryGraphEditSession.CloneOptions(_editSession.Options);
+                    foreach (int frozenId in _editSession.FrozenBuiltInOptionIds)
+                        authorOptions.Remove(frozenId);
+                    string authorSyncError;
+                    if (!EvtStoryGraphViewAccess.TryApplyDraft(
+                            _view, authorTalks, authorOptions,
+                            selectTalkId, out authorSyncError))
+                        Plugin.Log?.LogWarning(
+                            "[StoryGraph.Edit.Save] LaTeX 源码回填到原编辑器失败："
+                            + authorSyncError);
+                }
+
                 string workspaceCleanup = PruneSavedWorkspacePositions();
                 _editSession.MarkSaved();
                 _saveCgConfirmUntil = 0f;
@@ -8183,8 +8280,25 @@ namespace StudentAgeEditorPlus.Patches
             }
             finally
             {
+                // Prepare 成功但配置事务未走到 committed=true 的所有出口，统一
+                // 在这里撤销；避免每个失败分支各维护一份完成通知。
+                if (latexPrepared)
+                    NotifyLatexSaveCompletion(_editSession, false);
                 _savingEdit = false;
                 UpdateEditControls();
+            }
+        }
+
+        private static void NotifyLatexSaveCompletion(
+            StoryGraphEditSession session, bool committed)
+        {
+            if (session == null || StoryGraphLatexProbe.CompleteSave == null) return;
+            try { StoryGraphLatexProbe.CompleteSave(session, committed); }
+            catch (Exception e)
+            {
+                // 配置事务已经有自己的成败，LaTeX 收尾绝不能反向改写结论。
+                Plugin.Log?.LogWarning(
+                    "[StoryGraph.Edit.Save] LaTeX 保存收尾失败：" + e.Message);
             }
         }
 

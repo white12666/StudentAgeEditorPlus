@@ -272,6 +272,8 @@ namespace StudentAgeEditorPlus.Patches
                 page, "Content", -28f, 122f, true);
             SetInspectorPlaceholder(_inspectorContentInput,
                 "输入时会立即更新节点卡片和剧情草稿…");
+            AttachInspectorContentScroll(_inspectorContentInput);
+            BuildLatexPreview(page);
 
             _inspectorSpeakerInput = CreateInspectorFieldRow(
                 page, "对话角色 roleIds", -158f,
@@ -1196,6 +1198,7 @@ namespace StudentAgeEditorPlus.Patches
                 (RectTransform)_inspectorContentInput.transform,
                 TakeInspectorSlot(ref cursor, contentHeight, 8f),
                 contentHeight);
+            LayoutLatexPreview(ref cursor);
 
             bool showPrimaryRow =
                 (_inspectorSpeakerRow != null
