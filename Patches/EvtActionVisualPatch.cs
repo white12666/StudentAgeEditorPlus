@@ -1590,6 +1590,12 @@ namespace StudentAgeEditorPlus.Patches
                         "当前对话的前驱存在循环，无法唯一恢复执行前状态；请先修正跳转或使用完整剧情预览");
                     return false;
                 }
+                if (startSnapshot.OrphanOnlyPredecessor)
+                {
+                    StoryGraphToastRouter.Show(
+                        "进入本句前的路径中存在未挂载选项，无法可靠恢复状态；请重新连接或清除该选项的结果连线");
+                    return false;
+                }
                 if (startSnapshot.AmbiguousPredecessor)
                 {
                     // 分支合流没有运行时选项记录，任意选择一个前驱都可能让人物/

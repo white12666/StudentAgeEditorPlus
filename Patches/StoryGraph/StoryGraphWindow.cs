@@ -6902,8 +6902,8 @@ namespace StudentAgeEditorPlus.Patches
                 _inspectorBasicPreviewDirty = false;
                 EndInspectorLiveEdit();
                 _editMode = true;
-                _editStatus = "编辑草稿已就绪：左键空白框选，中键平移，右键打开菜单；"
-                              + "P 预览所选对话，Ctrl+C 复制，Ctrl+Shift+C 复制下游分支，Ctrl+V 粘贴。";
+                _editStatus = "编辑草稿已就绪：拖动端口连线，右击端口断线，Delete 删除节点；"
+                              + "左键空白框选，中键平移；右击空白可查看完整操作说明。";
                 _deleteConfirmUntil = 0f;
                 _discardConfirmUntil = 0f;
                 _saveCgConfirmUntil = 0f;

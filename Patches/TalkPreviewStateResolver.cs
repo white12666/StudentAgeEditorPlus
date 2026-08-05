@@ -112,6 +112,11 @@ namespace StudentAgeEditorPlus.Patches
         public int AfterBackgroundId = -1;
         public bool CurrentSceneBoundary;
         public bool AmbiguousPredecessor;
+        /// <summary>
+        /// 回溯某一步时，只发现指向该 Talk、但未被任何父 Talk 挂载的选项。
+        /// 这与真正没有任何前驱的独立起点不同，预览入口应阻止静默按根节点回放。
+        /// </summary>
+        public bool OrphanOnlyPredecessor;
         public bool CycleDetected;
         public bool DuplicateTalkId;
         public bool BackgroundContextDependent;
@@ -337,8 +342,10 @@ namespace StudentAgeEditorPlus.Patches
 
                 reverse.Add(cursor);
                 TalkCfg previous = FindPredecessor(
-                    talks, options, cursor.id, out bool ambiguous);
+                    talks, options, cursor.id, out bool ambiguous,
+                    out bool orphanOnly);
                 result.AmbiguousPredecessor |= ambiguous;
+                result.OrphanOnlyPredecessor |= orphanOnly;
                 if (previous == null) break;
                 if (visited.Contains(previous.id))
                 {
@@ -353,17 +360,20 @@ namespace StudentAgeEditorPlus.Patches
         }
 
         /// <summary>
-        /// 选择顺序严格跟随 ModEvtEditView.FindRoles：先 talkCfgs 中第一个直接前驱；
-        /// 没有时先固定 optionCfgs 中第一个指向目标的 option key，再只为该 key 找
-        /// 第一个父 Talk。首个 option 是孤立项时不会越过它选择后面的另一分支。
+        /// 选择顺序尽量跟随 ModEvtEditView.FindRoles：先 talkCfgs 中第一个直接前驱；
+        /// 没有时按 optionCfgs 顺序寻找第一个指向目标且确有父 Talk 的 option。
+        /// 指向目标但没有父 Talk 的孤立 option 不参与前驱选择，避免旧残留连线遮蔽
+        /// 后面的唯一有效分支；若只有这种孤立引用，则另行标记并由预览入口阻止。
         /// </summary>
         private static TalkCfg FindPredecessor(
             List<TalkCfg> talks,
             Dictionary<int, OptionCfg> options,
             int targetTalkId,
-            out bool ambiguous)
+            out bool ambiguous,
+            out bool orphanOnly)
         {
             ambiguous = false;
+            orphanOnly = false;
             TalkCfg firstDirect = null;
             int directCount = 0;
             foreach (TalkCfg talk in talks)
@@ -377,72 +387,63 @@ namespace StudentAgeEditorPlus.Patches
                 directCount++;
             }
 
-            bool hasOptionCandidate = HasOptionParentCandidate(talks, options, targetTalkId);
+            FindOptionParentCandidates(
+                talks, options, targetTalkId,
+                out TalkCfg firstOptionParent,
+                out int optionParentCount,
+                out bool hasMatchingOption);
             if (firstDirect != null)
             {
-                ambiguous = directCount > 1 || hasOptionCandidate;
+                ambiguous = directCount > 1 || optionParentCount > 0;
                 return firstDirect;
             }
 
-            if (options == null || options.Count == 0) return null;
-
-            int selectedOptionId = 0;
-            foreach (KeyValuePair<int, OptionCfg> entry in options)
+            if (firstOptionParent != null)
             {
-                OptionCfg option = entry.Value;
-                if (option != null && (Contains(option.talkId, targetTalkId)
-                    || Contains(option.talkId2, targetTalkId)))
-                {
-                    selectedOptionId = entry.Key;
-                    break;
-                }
+                ambiguous = optionParentCount > 1;
+                return firstOptionParent;
             }
-            if (selectedOptionId == 0) return null;
 
-            TalkCfg firstParent = null;
-            int parentCount = 0;
-            foreach (TalkCfg talk in talks)
-            {
-                if (talk == null || !Contains(talk.option, selectedOptionId)) continue;
-                if (firstParent == null) firstParent = talk;
-                parentCount++;
-            }
-            int viableParentCount = CountOptionParentCandidates(
-                talks, options, targetTalkId);
-            // 与编辑器 FindRoles 一样，首个匹配 option 可能是孤立项；但完整
-            // 中途预览不能把“历史被静默截断”当成可靠。若后面其实存在可用父级，
-            // 标记歧义并由入口阻止预览。
-            ambiguous = parentCount > 1 || viableParentCount > 1
-                || (firstParent == null && viableParentCount > 0);
-            return firstParent;
+            // 没有直接前驱，也没有任何有效 option 父级，但配置中仍有 option
+            // 指向目标：这是删除父连线后留下的孤立结果边，不能冒充真正的根节点。
+            orphanOnly = hasMatchingOption;
+            return null;
         }
 
-        private static bool HasOptionParentCandidate(
+        private static void FindOptionParentCandidates(
             List<TalkCfg> talks,
             Dictionary<int, OptionCfg> options,
-            int targetTalkId)
+            int targetTalkId,
+            out TalkCfg firstParent,
+            out int parentCount,
+            out bool hasMatchingOption)
         {
-            return CountOptionParentCandidates(talks, options, targetTalkId) > 0;
-        }
+            firstParent = null;
+            parentCount = 0;
+            hasMatchingOption = false;
+            if (options == null || options.Count == 0) return;
 
-        private static int CountOptionParentCandidates(
-            List<TalkCfg> talks,
-            Dictionary<int, OptionCfg> options,
-            int targetTalkId)
-        {
-            if (options == null) return 0;
             var parents = new HashSet<TalkCfg>();
             foreach (KeyValuePair<int, OptionCfg> entry in options)
             {
                 OptionCfg option = entry.Value;
                 if (option == null || (!Contains(option.talkId, targetTalkId)
                     && !Contains(option.talkId2, targetTalkId))) continue;
+                hasMatchingOption = true;
+
+                TalkCfg firstForOption = null;
                 foreach (TalkCfg talk in talks)
                 {
-                    if (talk != null && Contains(talk.option, entry.Key)) parents.Add(talk);
+                    if (talk == null || !Contains(talk.option, entry.Key)) continue;
+                    if (firstForOption == null) firstForOption = talk;
+                    parents.Add(talk);
                 }
+                // 保留原来的 optionCfgs/talkCfgs 选取顺序，但会越过没有父级的
+                // 孤立 option，选择后面的第一个真实分支。
+                if (firstParent == null && firstForOption != null)
+                    firstParent = firstForOption;
             }
-            return parents.Count;
+            parentCount = parents.Count;
         }
 
         private static bool ApplySceneBoundary(
