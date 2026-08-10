@@ -2,29 +2,15 @@
 
 > StudentAge（学生时代）MOD 编辑器增强插件（BepInEx）
 >
-> 修复/增强编辑器 15 项功能，详见 [修复说明.md](修复说明.md)。
+> 纯作者侧编辑器增强，详见 [修复说明.md](修复说明.md)。
 
 ## 安装
 
-本仓库包含两个独立产品：
-
-- **StudentAgeEditorPlus**：作者端编辑器插件；
-- **StudentAgeSocialRoleRuntime**：玩家端共享运行库，也供作者在游戏内预览自定义资料。
-
-### Mod 作者
-
 1. 安装 BepInEx 5；
 2. 从 [Releases](https://github.com/white12666/StudentAgeEditorPlus/releases) 下载并解压 `StudentAgeEditorPlus-v*.zip` 到游戏根目录；
-3. 如需预览教师、成人或自定义资料，再下载并解压独立的 `StudentAgeSocialRoleRuntime-v*.zip`；
-4. 启动游戏。
+3. 启动游戏。
 
-缺少 Runtime 不会阻止 EditorPlus 加载，但日志会提示资料页预览不可用。
-
-### 普通玩家
-
-普通玩家不需要安装 `StudentAgeEditorPlus.dll`。只有当所玩的作品声明依赖时，才需要安装独立的 `StudentAgeSocialRoleRuntime`。
-
-通过 Steam 创意工坊发布时，应把 Runtime 设为 EditorPlus 和相关作品的“必需物品”。现行 StudentAgeModManager 会负责工坊插件接入与本地开关，但订阅仍由 Steam 完成。
+EditorPlus 只面向 Mod 作者，生成的原生配置不要求玩家安装本插件。
 
 ## 从源码构建
 
@@ -32,10 +18,9 @@
 dotnet build .\StudentAgeEditorPlus.csproj -c Release
 ```
 
-本地开发构建会同时构建并分别部署：
+本地开发构建只部署作者端：
 
-- `BepInEx/plugins/StudentAgeEditorPlus/StudentAgeEditorPlus.dll`；
-- `BepInEx/plugins/StudentAgeSocialRoleRuntime/StudentAgeSocialRoleRuntime.dll`。
+- `BepInEx/plugins/StudentAgeEditorPlus/StudentAgeEditorPlus.dll`。
 
 只构建、不部署到当前游戏：
 
@@ -59,7 +44,7 @@ dotnet build .\StudentAgeEditorPlus.csproj -c Release -p:DeployToGame=false
 - 安装独立 StudentAgeLatex 时，“基础”页正文框下会实时预览 `$` 行内公式与
   `$$` 二维公式；未安装时该区域自动隐藏，剧情图其它功能不受影响。
 
-可视化编辑只生成游戏原生配置，不需要玩家安装作者端插件。详细交互、限制和保存策略见 [修复说明.md](修复说明.md#14-剧情图事件分支可视化总览与节点编辑-已添加)。
+可视化编辑只生成游戏原生配置，不需要玩家安装作者端插件。详细交互、限制和保存策略见 [修复说明.md](修复说明.md#13-剧情图事件分支可视化总览与节点编辑-已添加)。
 
 ## 发布新版本
 
@@ -67,12 +52,11 @@ dotnet build .\StudentAgeEditorPlus.csproj -c Release -p:DeployToGame=false
 .\package-release.ps1
 ```
 
-脚本会在 `artifacts/` 生成两个独立 ZIP 和 `SHA256SUMS.txt`：
+脚本会在 `artifacts/` 生成 EditorPlus ZIP 和 `SHA256SUMS.txt`：
 
 - `StudentAgeEditorPlus-v<版本>.zip`；
-- `StudentAgeSocialRoleRuntime-v<版本>.zip`。
 
-两包均包含 `workshop-plugin.json` 和可直接解压到游戏根目录的文件结构。完整发布、工坊依赖和迁移流程见 [发布与依赖.md](发布与依赖.md)。
+发布包包含 `workshop-plugin.json` 和可直接解压到游戏根目录的文件结构。可选的 StudentAgeLatex 源码存在时，脚本仍会额外打包该独立伴侣插件。完整发布说明见 [发布与依赖.md](发布与依赖.md)。
 
 ## 考试同学排名配置
 
@@ -88,31 +72,6 @@ dotnet build .\StudentAgeEditorPlus.csproj -c Release -p:DeployToGame=false
 NPC 人物页原生的 `examRank` 字段仍保留给高级剧情人物使用，但已明确标为「剧情人物排名（高级）」；点击旁边的「同学入口」只会给出一条简短路径提示，不再弹出内部字段长说明。
 
 权重不是直接分数：它只影响同学在当前排名段中的先后倾向，最终分数仍由实际名次生成。保存结果是原生 `Classmate*Cfg.json`，普通玩家无需安装 EditorPlus。详细限制和剧情条件示例见《修复说明》。
-
-## 可社交角色资料编辑器
-
-在原生「NPC人物」编辑器中，将人物类型设为 `2/3/4` 后，会出现 EditorPlus 的社交资料字段：
-
-- 学生：沿用原版逻辑，学校和班级随主角当前年级变化；
-- 教师：可按 NPC 单独填写学校、职务；
-- 成人：可按 NPC 单独填写单位、身份；
-- 自定义：两栏标题和内容均可自由填写；
-- 可选择隐藏非学生角色不合适的成绩段位图标；
-- **资料阶段**：同一角色可配置多个资料阶段，按触发条件（事件已发生 / 选项已选择 / 事件存档值达标）随玩家剧情进度自动切换，例如升职后职务变化；支持在编辑器里增删阶段，或通过剪贴板导出/导入 JSON 批量编辑（格式见修复说明）。
-
-扩展资料以带版本标记的形式保存在标准 `PersonCfg.note` 中，仍随 `PersonCfg.json` 一起打包。作者端 EditorPlus 只负责编辑和写入数据；玩家端显示由独立的轻量 `StudentAgeSocialRoleRuntime.dll` 负责。
-
-### 作品依赖
-
-如果作品使用教师、成人或自定义资料，请依赖独立的 `StudentAgeSocialRoleRuntime`：
-
-- Steam 创意工坊：把 Runtime 工坊项目设置为作品的“必需物品”；
-- GitHub / 手动分发：提示玩家单独安装 `StudentAgeSocialRoleRuntime-v*.zip`；
-- 不再推荐把 Runtime DLL 复制进每个作品目录，以免出现多个副本和版本漂移。
-
-玩家不需要安装 StudentAgeEditorPlus。如果 Runtime 缺失，角色仍可关注和触发事件，但资料页会退回原版统一的学校/班级显示。过渡期确实无法声明依赖时，可以临时随作品携带同版本 DLL，待独立 Runtime 发布后再迁移。
-
-当前功能修正的是社交资料页。NPC 的内部 `Grade/GradeState`、阶段立绘选择、校服和成长结算仍沿用游戏原有逻辑；制作成年人时建议两个阶段都配置合适立绘，并避免依赖学生专属的考试/班级玩法。
 
 ## License
 
