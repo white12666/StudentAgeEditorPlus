@@ -11,7 +11,7 @@ namespace StudentAgeEditorPlus.Patches
     /// <summary>
     /// 游玩路径的崩溃恢复钩子：编辑器界面各自的恢复入口只在打开编辑器时执行，
     /// 但强退后玩家可能直接开始游玩——ModCtrl.LoadModCfgs 读盘前若不先恢复，
-    /// 半提交的 Talk/Option（或人物成对表的半新半旧状态）会被合并进内存。
+    /// 半提交的 Talk/Option 会被合并进内存。
     /// Prefix 挂在 async 方法的启动桩上，调用时同步执行，先于任何文件读取。
     /// </summary>
     [HarmonyPatch(typeof(ModCtrl), "LoadModCfgs")]
@@ -33,10 +33,6 @@ namespace StudentAgeEditorPlus.Patches
                 if (string.IsNullOrWhiteSpace(modRoot)) return;
 
                 RecoverStoryGraph(modRoot, "[ModLoadRecovery]");
-                RecoverPersonPair(
-                    Path.Combine(langDir, "PersonCfg.json"),
-                    Path.Combine(langDir, "PersonGrowCfg.json"),
-                    "[ModLoadRecovery]");
             }
             catch (Exception e)
             {
@@ -72,32 +68,6 @@ namespace StudentAgeEditorPlus.Patches
             }
         }
 
-        /// <summary>人物成对保存（PersonCfg/PersonGrowCfg）恢复；无未决事务时空跑。</summary>
-        internal static bool RecoverPersonPair(
-            string personPath, string growPath, string logTag)
-        {
-            try
-            {
-                bool recovered;
-                string error;
-                if (AtomicFilePairTransaction.Recover(
-                        personPath, growPath, out recovered, out error))
-                {
-                    if (recovered)
-                        Plugin.Log?.LogWarning(logTag
-                            + " 已在读取 Mod 配置前成对恢复人物配置：" + personPath);
-                    return true;
-                }
-                Plugin.Log?.LogError(logTag + " 人物成对保存恢复失败（"
-                    + personPath + "）：" + error);
-                return false;
-            }
-            catch (Exception e)
-            {
-                Plugin.Log?.LogError(logTag + " " + e);
-                return false;
-            }
-        }
     }
 
     /// <summary>
@@ -111,16 +81,6 @@ namespace StudentAgeEditorPlus.Patches
     {
         private static readonly FieldInfo ModRootField =
             AccessTools.Field(typeof(ModPageUploadView), "modRoot");
-
-        private static readonly string[] PersonTransientSuffixes =
-        {
-            AtomicFilePairTransaction.PendingSuffix,
-            AtomicFilePairTransaction.NewSuffix,
-            AtomicFilePairTransaction.OldSuffix,
-            AtomicFilePairTransaction.AbsentSuffix,
-            AtomicFilePairTransaction.LockSuffix,
-            ".saep-personsave.restore",
-        };
 
         private static void Prefix(ModPageUploadView __instance)
         {
@@ -151,14 +111,9 @@ namespace StudentAgeEditorPlus.Patches
             // 只警告不阻断——删掉事务备份会让下次自动恢复永远无法完成。
             bool storyGraphSafe = ModLoadRecoveryPatch.RecoverStoryGraph(
                 modRoot, "[ModUploadCleanup]");
-            bool personSafe = !Directory.Exists(cfgsDir)
-                              || RecoverPendingPersonPairs(cfgsDir);
             if (!storyGraphSafe)
                 SafeToast("剧情图保存事务未能自动恢复，已保留全部恢复文件；"
                     + "本次上传会包含这些残留，建议先重新打开事件完成恢复后再上传。");
-            if (!personSafe)
-                SafeToast("人物配置成对保存事务未能自动恢复，已保留全部恢复文件；"
-                    + "本次上传会包含这些残留，建议先打开人物编辑器完成恢复后再上传。");
 
             string backupRoot = Path.Combine(
                 Paths.ConfigPath, "StudentAgeEditorPlus", "UploadBackups",
@@ -189,20 +144,11 @@ namespace StudentAgeEditorPlus.Patches
                             cleaned++;
                         }
                     }
-                    else if (IsPersonTransient(name))
-                    {
-                        if (!personSafe) continue;
-                        File.Delete(file);
-                        cleaned++;
-                    }
                     else if (IsUserBackup(name))
                     {
                         if (name.EndsWith(".storygraph.bak",
                                 StringComparison.OrdinalIgnoreCase)
                             && !storyGraphSafe) continue;
-                        if (name.EndsWith(AtomicFilePairTransaction.BackupSuffix,
-                                StringComparison.OrdinalIgnoreCase)
-                            && !personSafe) continue;
                         MoveToBackupRoot(file, modRoot, backupRoot);
                         moved++;
                     }
@@ -237,43 +183,6 @@ namespace StudentAgeEditorPlus.Patches
             {
                 SafeToast("上传前清理有 " + failed + " 个文件处理失败，请查看日志。");
             }
-        }
-
-        /// <summary>逐个 .pending 找到成对文件并恢复；返回 false 表示仍有滞留。</summary>
-        private static bool RecoverPendingPersonPairs(string cfgsDir)
-        {
-            bool allRecovered = true;
-            try
-            {
-                foreach (string pending in Directory.GetFiles(
-                    cfgsDir, "*" + AtomicFilePairTransaction.PendingSuffix,
-                    SearchOption.AllDirectories))
-                {
-                    string firstPath = pending.Substring(
-                        0, pending.Length
-                           - AtomicFilePairTransaction.PendingSuffix.Length);
-                    // pending 建在成对事务的第一个文件（PersonCfg.json）上；
-                    // 形状不符说明不是本插件写的事务，保守跳过并保留原样。
-                    if (!firstPath.EndsWith("PersonCfg.json",
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        allRecovered = false;
-                        continue;
-                    }
-                    string growPath = Path.Combine(
-                        Path.GetDirectoryName(firstPath) ?? cfgsDir,
-                        "PersonGrowCfg.json");
-                    if (!ModLoadRecoveryPatch.RecoverPersonPair(
-                            firstPath, growPath, "[ModUploadCleanup]"))
-                        allRecovered = false;
-                }
-            }
-            catch (Exception e)
-            {
-                Plugin.Log?.LogError("[ModUploadCleanup] " + e);
-                allRecovered = false;
-            }
-            return allRecovered;
         }
 
         /// <summary>
@@ -344,23 +253,10 @@ namespace StudentAgeEditorPlus.Patches
                     yield return file;
         }
 
-        private static bool IsPersonTransient(string fileName)
-        {
-            for (int i = 0; i < PersonTransientSuffixes.Length; i++)
-            {
-                if (fileName.EndsWith(PersonTransientSuffixes[i],
-                        StringComparison.OrdinalIgnoreCase))
-                    return true;
-            }
-            return false;
-        }
-
         private static bool IsUserBackup(string fileName)
         {
             return fileName.EndsWith(".storygraph.bak",
-                       StringComparison.OrdinalIgnoreCase)
-                   || fileName.EndsWith(AtomicFilePairTransaction.BackupSuffix,
-                       StringComparison.OrdinalIgnoreCase);
+                StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>保留 modRoot 内的相对路径转移备份；重名时追加时间戳避免覆盖旧备份。</summary>

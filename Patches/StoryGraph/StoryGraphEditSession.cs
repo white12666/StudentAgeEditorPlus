@@ -5684,7 +5684,7 @@ namespace StudentAgeEditorPlus.Patches
 
         /// <summary>
         /// 事务里先行写下的临时/日志文件必须真实落盘（WriteThrough+Flush(true)，
-        /// 与 AtomicFilePairTransaction.WriteDurable 同法）：普通 WriteAllText 只
+        /// 与人物配置的可恢复事务采用同样落盘策略）：普通 WriteAllText 只
         /// 进 OS 缓存，断电后日志可能指向不存在的内容。UTF8 无 BOM。
         /// </summary>
         private static void WriteDurable(string path, string content)

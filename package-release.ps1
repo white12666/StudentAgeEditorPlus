@@ -114,18 +114,16 @@ if (-not [System.IO.Path]::IsPathRooted($OutputDirectory)) {
 $OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 
 $editorProject = Join-Path $repoRoot "StudentAgeEditorPlus.csproj"
-$runtimeProject = Join-Path $repoRoot "Runtime\StudentAgeSocialRoleRuntime.csproj"
 # LaTeX 插件是独立仓库（_modsrc/StudentAgeTypeset/src/plugin）的可选伴侣：
-# 这里一并打包，作者端 + 玩家端 + LaTeX 三产物同版本号发放。缺源时跳过。
+# 这里保留可选伴侣插件的一并打包流程；缺少源码时自动跳过。
 $latexProject = Join-Path $repoRoot "..\StudentAgeTypeset\src\plugin\StudentAgeLatex.csproj"
 $latexProject = [System.IO.Path]::GetFullPath($latexProject)
 $hasLatex = [System.IO.File]::Exists($latexProject)
 $editorVersion = Get-ProjectVersion $editorProject
-$runtimeVersion = Get-ProjectVersion $runtimeProject
 $latexVersion = if ($hasLatex) { Get-ProjectVersion $latexProject } else { $null }
 
 if (-not $SkipBuild) {
-    Write-Host "[1/4] 构建作者端与玩家端（不部署到当前游戏）..." -ForegroundColor Cyan
+    Write-Host "[1/4] 构建 EditorPlus（不部署到当前游戏）..." -ForegroundColor Cyan
     & dotnet build $editorProject -c $Configuration -p:DeployToGame=false
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet build 失败，退出码: $LASTEXITCODE"
@@ -143,7 +141,6 @@ else {
 }
 
 $editorDll = Join-Path $repoRoot "bin\$Configuration\StudentAgeEditorPlus.dll"
-$runtimeDll = Join-Path $repoRoot "Runtime\bin\$Configuration\StudentAgeSocialRoleRuntime.dll"
 $marker = Join-Path $repoRoot "Packaging\workshop-plugin.json"
 $license = Join-Path $repoRoot "LICENSE"
 $fixGuide = Join-Path $repoRoot "修复说明.md"
@@ -154,12 +151,10 @@ $stageRoot = Join-Path $OutputDirectory ".staging"
 Reset-Directory $stageRoot
 
 $editorStage = Join-Path $stageRoot "editor"
-$runtimeStage = Join-Path $stageRoot "runtime"
 Reset-Directory $editorStage
-Reset-Directory $runtimeStage
 
 try {
-    Write-Host "[2/4] 组装两个独立产品目录..." -ForegroundColor Cyan
+    Write-Host "[2/4] 组装 EditorPlus 发布目录..." -ForegroundColor Cyan
 
     Copy-RequiredFile $marker (Join-Path $editorStage "workshop-plugin.json")
     Copy-RequiredFile (Join-Path $repoRoot "README.md") (Join-Path $editorStage "README.md")
@@ -168,13 +163,6 @@ try {
     Copy-RequiredFile $license (Join-Path $editorStage "LICENSE")
     Copy-RequiredFile $editorDll (Join-Path $editorStage `
         "BepInEx\plugins\StudentAgeEditorPlus\StudentAgeEditorPlus.dll")
-
-    Copy-RequiredFile $marker (Join-Path $runtimeStage "workshop-plugin.json")
-    Copy-RequiredFile (Join-Path $repoRoot "Runtime\README.md") `
-        (Join-Path $runtimeStage "README.md")
-    Copy-RequiredFile $license (Join-Path $runtimeStage "LICENSE")
-    Copy-RequiredFile $runtimeDll (Join-Path $runtimeStage `
-        "BepInEx\plugins\StudentAgeSocialRoleRuntime\StudentAgeSocialRoleRuntime.dll")
 
     # LaTeX 伴侣插件（可选）：插件本体 + 引擎库 + NuGet 六件套 + 原生 libSkiaSharp，
     # 与 csproj 部署白名单严格同源。
@@ -199,8 +187,6 @@ try {
 
     $editorPackage = Join-Path $OutputDirectory `
         "StudentAgeEditorPlus-v$editorVersion.zip"
-    $runtimePackage = Join-Path $OutputDirectory `
-        "StudentAgeSocialRoleRuntime-v$runtimeVersion.zip"
     $latexPackage = if ($hasLatex) {
         Join-Path $OutputDirectory "StudentAgeLatex-v$latexVersion.zip"
     } else { $null }
@@ -214,12 +200,6 @@ try {
         "LICENSE",
         "BepInEx/plugins/StudentAgeEditorPlus/StudentAgeEditorPlus.dll"
     )
-    New-VerifiedZip $runtimeStage $runtimePackage @(
-        "workshop-plugin.json",
-        "README.md",
-        "LICENSE",
-        "BepInEx/plugins/StudentAgeSocialRoleRuntime/StudentAgeSocialRoleRuntime.dll"
-    )
     if ($hasLatex) {
         New-VerifiedZip $latexStage $latexPackage @(
             "workshop-plugin.json",
@@ -232,7 +212,7 @@ try {
 
     Write-Host "[4/4] 写入 SHA-256 校验值..." -ForegroundColor Cyan
     $hashFile = Join-Path $OutputDirectory "SHA256SUMS.txt"
-    $packages = @($editorPackage, $runtimePackage)
+    $packages = @($editorPackage)
     if ($hasLatex) { $packages += $latexPackage }
     $hashLines = $packages | ForEach-Object {
         $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -242,7 +222,6 @@ try {
 
     Write-Host "发布产物已生成：" -ForegroundColor Green
     Write-Host "  $editorPackage"
-    Write-Host "  $runtimePackage"
     if ($hasLatex) { Write-Host "  $latexPackage" }
     Write-Host "  $hashFile"
 }

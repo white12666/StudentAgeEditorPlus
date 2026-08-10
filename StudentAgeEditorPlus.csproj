@@ -5,7 +5,7 @@
     <AssemblyName>StudentAgeEditorPlus</AssemblyName>
     <RootNamespace>StudentAgeEditorPlus</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <Version>0.3.1</Version>
+    <Version>0.4.0</Version>
 
     <!-- BepInEx 不需要这些, 保持 plugins 目录干净 -->
     <GenerateDependencyFile>false</GenerateDependencyFile>
@@ -22,16 +22,14 @@
     <PluginOutDir>$(GameRoot)\BepInEx\plugins\StudentAgeEditorPlus</PluginOutDir>
   </PropertyGroup>
 
-  <!-- Shared 默认编译进作者端；Runtime 是独立玩家插件，不能重复编译进 EditorPlus。 -->
+  <!-- 排除本地工具、测试以及旧工程目录中的构建残留。 -->
   <ItemGroup>
+    <!-- 旧玩家端工程已迁出；排除目录中可能残留的本地 bin/obj 生成源码。 -->
     <Compile Remove="Runtime\**\*.cs" />
     <!-- tools 是被 .gitignore 排除的本地分析/验证目录，不得被 SDK 默认通配
          编进插件；其中可能包含独立测试项目及其 obj 生成源码。 -->
     <Compile Remove="tools\**\*.cs" />
     <Compile Remove="Tests\**\*.cs" />
-    <!-- 构建 EditorPlus 时一并构建玩家端轻量运行库，但作者端程序集不引用它。 -->
-    <ProjectReference Include="Runtime\StudentAgeSocialRoleRuntime.csproj"
-                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!-- BepInEx / Harmony -->
@@ -103,14 +101,9 @@
       <HintPath>$(ManagedDir)\DOTween.Modules.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <!-- 游戏自带 Newtonsoft.Json（ModCtrl 保存配置就在用），社交资料JSON导入导出复用它 -->
+    <!-- 游戏自带 Newtonsoft.Json（ModCtrl 保存配置就在用）。 -->
     <Reference Include="Newtonsoft.Json">
       <HintPath>$(ManagedDir)\Newtonsoft.Json.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <!-- 人物配置的事务保存保持与原编辑器完全相同的 JSON 序列化格式。 -->
-    <Reference Include="MessagePack">
-      <HintPath>$(ManagedDir)\MessagePack.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
