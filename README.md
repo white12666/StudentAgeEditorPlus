@@ -6,6 +6,14 @@
 
 ## 安装
 
+**方式一：创意工坊订阅（推荐）**
+
+1. 在 Steam 创意工坊订阅 EditorPlus 及其右侧「必需物品」（学生时代 MOD 管理器）；
+2. 运行 MOD 管理器，一键部署 BepInEx 环境并接入工坊插件；
+3. 启动游戏，进入创意工坊编辑器即可使用全部增强。
+
+**方式二：手动安装**
+
 1. 安装 BepInEx 5；
 2. 从 [Releases](https://github.com/white12666/StudentAgeEditorPlus/releases) 下载并解压 `StudentAgeEditorPlus-v*.zip` 到游戏根目录；
 3. 启动游戏。
