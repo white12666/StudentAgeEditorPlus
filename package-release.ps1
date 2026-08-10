@@ -114,26 +114,13 @@ if (-not [System.IO.Path]::IsPathRooted($OutputDirectory)) {
 $OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 
 $editorProject = Join-Path $repoRoot "StudentAgeEditorPlus.csproj"
-# LaTeX 插件是独立仓库（_modsrc/StudentAgeTypeset/src/plugin）的可选伴侣：
-# 这里保留可选伴侣插件的一并打包流程；缺少源码时自动跳过。
-$latexProject = Join-Path $repoRoot "..\StudentAgeTypeset\src\plugin\StudentAgeLatex.csproj"
-$latexProject = [System.IO.Path]::GetFullPath($latexProject)
-$hasLatex = [System.IO.File]::Exists($latexProject)
 $editorVersion = Get-ProjectVersion $editorProject
-$latexVersion = if ($hasLatex) { Get-ProjectVersion $latexProject } else { $null }
 
 if (-not $SkipBuild) {
     Write-Host "[1/4] 构建 EditorPlus（不部署到当前游戏）..." -ForegroundColor Cyan
     & dotnet build $editorProject -c $Configuration -p:DeployToGame=false
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet build 失败，退出码: $LASTEXITCODE"
-    }
-    if ($hasLatex) {
-        Write-Host "      构建 LaTeX 伴侣插件..." -ForegroundColor Cyan
-        & dotnet build $latexProject -c $Configuration -p:DeployToGame=false
-        if ($LASTEXITCODE -ne 0) {
-            throw "dotnet build (StudentAgeLatex) 失败，退出码: $LASTEXITCODE"
-        }
     }
 }
 else {
@@ -164,32 +151,8 @@ try {
     Copy-RequiredFile $editorDll (Join-Path $editorStage `
         "BepInEx\plugins\StudentAgeEditorPlus\StudentAgeEditorPlus.dll")
 
-    # LaTeX 伴侣插件（可选）：插件本体 + 引擎库 + NuGet 六件套 + 原生 libSkiaSharp，
-    # 与 csproj 部署白名单严格同源。
-    $latexStage = $null
-    if ($hasLatex) {
-        $latexStage = Join-Path $stageRoot "latex"
-        Reset-Directory $latexStage
-        $latexBin = Join-Path $repoRoot "..\StudentAgeTypeset\src\plugin\bin\$Configuration"
-        $latexBin = [System.IO.Path]::GetFullPath($latexBin)
-        Copy-RequiredFile $marker (Join-Path $latexStage "workshop-plugin.json")
-        Copy-RequiredFile $license (Join-Path $latexStage "LICENSE")
-        $latexOutDir = Join-Path $latexStage "BepInEx\plugins\StudentAgeLatex"
-        foreach ($name in @(
-            "StudentAgeLatex.dll", "StudentAgeTypeset.dll",
-            "CSharpMath.dll", "CSharpMath.Rendering.dll",
-            "CSharpMath.SkiaSharp.dll", "CSharpMath.Editor.dll",
-            "SkiaSharp.dll", "libSkiaSharp.dll")) {
-            Copy-RequiredFile (Join-Path $latexBin $name) `
-                (Join-Path $latexOutDir $name)
-        }
-    }
-
     $editorPackage = Join-Path $OutputDirectory `
         "StudentAgeEditorPlus-v$editorVersion.zip"
-    $latexPackage = if ($hasLatex) {
-        Join-Path $OutputDirectory "StudentAgeLatex-v$latexVersion.zip"
-    } else { $null }
 
     Write-Host "[3/4] 生成并校验压缩包..." -ForegroundColor Cyan
     New-VerifiedZip $editorStage $editorPackage @(
@@ -200,20 +163,9 @@ try {
         "LICENSE",
         "BepInEx/plugins/StudentAgeEditorPlus/StudentAgeEditorPlus.dll"
     )
-    if ($hasLatex) {
-        New-VerifiedZip $latexStage $latexPackage @(
-            "workshop-plugin.json",
-            "LICENSE",
-            "BepInEx/plugins/StudentAgeLatex/StudentAgeLatex.dll",
-            "BepInEx/plugins/StudentAgeLatex/StudentAgeTypeset.dll",
-            "BepInEx/plugins/StudentAgeLatex/libSkiaSharp.dll"
-        )
-    }
-
     Write-Host "[4/4] 写入 SHA-256 校验值..." -ForegroundColor Cyan
     $hashFile = Join-Path $OutputDirectory "SHA256SUMS.txt"
     $packages = @($editorPackage)
-    if ($hasLatex) { $packages += $latexPackage }
     $hashLines = $packages | ForEach-Object {
         $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $([System.IO.Path]::GetFileName($_))"
@@ -222,7 +174,6 @@ try {
 
     Write-Host "发布产物已生成：" -ForegroundColor Green
     Write-Host "  $editorPackage"
-    if ($hasLatex) { Write-Host "  $latexPackage" }
     Write-Host "  $hashFile"
 }
 finally {

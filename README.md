@@ -56,7 +56,7 @@ dotnet build .\StudentAgeEditorPlus.csproj -c Release -p:DeployToGame=false
 
 - `StudentAgeEditorPlus-v<版本>.zip`；
 
-发布包包含 `workshop-plugin.json` 和可直接解压到游戏根目录的文件结构。可选的 StudentAgeLatex 源码存在时，脚本仍会额外打包该独立伴侣插件。完整发布说明见 [发布与依赖.md](发布与依赖.md)。
+发布包包含 `workshop-plugin.json` 和可直接解压到游戏根目录的文件结构。完整发布说明见 [发布与依赖.md](发布与依赖.md)。
 
 ## 考试同学排名配置
 
