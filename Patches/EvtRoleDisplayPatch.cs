@@ -205,9 +205,11 @@ namespace StudentAgeEditorPlus.Patches
     }
 
     /// <summary>
-    /// 小舞台与人物选择框共用的安全名单解析。正常剧情图使用播放器状态快照；
-    /// 重复 ID/循环等不可靠图才使用带完整长度和循环保护的本地回退，绝不再调用
-    /// 原版会对合法短指令 [id,1001] 直接读取 role[3] 的 FindRoles。
+    /// 小舞台与人物选择框共用的安全名单解析。正常剧情图先使用播放器状态快照；
+    /// 但当前句正文为空时，真实播放会跳过整句，而编辑器仍必须即时显示作者刚用
+    /// “+”写入的角色动作，否则只有输入正文后人物才出现。该编辑态叠加只作用于
+    /// 当前句 roster，不改变 PreviewTalkView / NewTalkView 的空正文跳过语义。
+    /// 重复 ID/循环等不可靠图则使用带完整长度和循环保护的本地回退。
     /// </summary>
     internal static class EvtRoleRosterResolver
     {
@@ -230,11 +232,53 @@ namespace StudentAgeEditorPlus.Patches
                         : entry.Value.TargetAxis;
                     if (SceneAxis(axis)) result[entry.Key] = axis;
                 }
+                if (string.IsNullOrWhiteSpace(current.content))
+                    ApplyCurrentEditorActions(current, result);
                 return result;
             }
 
-            return ResolveFallback(view, current);
+            Dictionary<int, TalkAxis> fallback = ResolveFallback(view, current);
+            if (string.IsNullOrWhiteSpace(current.content))
+                ApplyCurrentEditorActions(current, fallback);
+            return fallback;
         }
+
+        /// <summary>
+        /// 空正文当前句的编辑态投影。按动作原顺序处理进/退场，保证“清空后重加”
+        /// 与同句替换都立即反映；只认具备有效方位的显式进场，绝不凭普通动作猜站位。
+        /// </summary>
+        private static void ApplyCurrentEditorActions(
+            TalkCfg current,
+            Dictionary<int, TalkAxis> result)
+        {
+            if (current?.roles == null || result == null) return;
+            foreach (List<float> action in current.roles)
+            {
+                if (action == null || action.Count < 2) continue;
+                int personId = (int)action[0];
+                if (personId < 0) continue;
+                int type = ActionType((int)action[1]);
+                if (type == 2)
+                {
+                    result.Remove(personId);
+                    continue;
+                }
+                if (type != 1 || action.Count <= 3) continue;
+                TalkAxis axis = (TalkAxis)(int)action[3];
+                if (SceneAxis(axis)) result[personId] = axis;
+            }
+        }
+
+        private static int ActionType(int code)
+        {
+            if (Cfg.TalkAnimeCfgMap != null
+                && Cfg.TalkAnimeCfgMap.TryGetValue(code, out TalkAnimeCfg anime))
+                return anime.type;
+            if (code >= 1001 && code <= 1003) return 1;
+            if (code == 2001 || code == 2002) return 2;
+            return 0;
+        }
+
 
         private static Dictionary<int, TalkAxis> ResolveFallback(
             ModEvtEditView view,
@@ -285,12 +329,7 @@ namespace StudentAgeEditorPlus.Patches
                 int personId = (int)action[0];
                 if (personId < 0 || fixedPersons.Contains(personId)) continue;
                 int code = (int)action[1];
-                int type = 0;
-                if (Cfg.TalkAnimeCfgMap != null
-                    && Cfg.TalkAnimeCfgMap.TryGetValue(code, out TalkAnimeCfg anime))
-                    type = anime.type;
-                else if (code >= 1001 && code <= 1003) type = 1;
-                else if (code == 2001 || code == 2002) type = 2;
+                int type = ActionType(code);
 
                 if (type == 1)
                 {
