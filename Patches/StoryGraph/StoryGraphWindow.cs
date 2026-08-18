@@ -56,12 +56,14 @@ namespace StudentAgeEditorPlus.Patches
         private const float MinZoom = 0.2f;          // 缩放下限（契约 0.2~2.5）
         private const float MaxZoom = 2.5f;          // 缩放上限
         private const float FitMaxZoom = 1.25f;      // 适应全图时的放大上限
-        // 本窗口沿用游戏 Canvas 的逻辑分辨率。尺寸必须按 1440p 级参考画布设计，
-        // 旧版 40/28/13 的工具栏参数实际接近 1080p 小控件，4K 下物理像素虽放大，
-        // 但相对游戏 UI 和高 DPI 屏幕仍显得过小。
+        // 剧情图使用独立 Overlay Canvas。不能直接复制游戏根 Canvas 的 2560×1440
+        // 参考分辨率：1080p 会叠加 0.75 非整数缩放；也不能永久固定 1px，
+        // 否则 4K 上工具栏与节点物理尺寸减半。下面只使用整数 1x/2x 像素倍率。
         private const float ToolbarHeight = 64f;     // 顶部工具栏高
         private const float ToolbarControlHeight = 42f;
         private const float StatusbarHeight = 34f;   // 底部状态栏高
+        private const float UiScale2xMinWidth = 3200f;
+        private const float UiScale2xMinHeight = 1800f;
         private const int ToolbarFontSize = 16;
         private const int SecondaryFontSize = 14;
         private const float EdgeLabelMinZoom = 0.38f;// 低于该缩放不画边标签
@@ -1775,38 +1777,45 @@ namespace StudentAgeEditorPlus.Patches
         private void LayoutEditToolbar(float width)
         {
             float y = -ToolbarHeight * 0.5f;
-            bool showAddOption = width >= 820f;
-            bool showPreview = width >= 900f;
-            bool showDuplicate = width >= 1120f;
-            bool showUndo = width >= 700f;
-            bool showRedo = width >= 980f;
-            if (_addOptionEditButton != null)
-                _addOptionEditButton.gameObject.SetActive(showAddOption);
-            if (_duplicateEditButton != null)
-                _duplicateEditButton.gameObject.SetActive(showDuplicate);
-            if (_previewEditButton != null)
-                _previewEditButton.gameObject.SetActive(showPreview);
-            if (_undoEditButton != null)
-                _undoEditButton.gameObject.SetActive(showUndo);
-            if (_redoEditButton != null)
-                _redoEditButton.gameObject.SetActive(showRedo);
-
+            // 左侧按钮必须在右侧属性/保存/放弃/关闭组之前结束。旧版只按固定
+            // 宽度阈值显隐，1024px 时“重做”会压到“隐藏属性”。按实际累计宽度
+            // 逐项装入，优先保留返回、新增对话、删除；其余仍有快捷键/右键入口。
+            const float rightGroupStartOffset = 380f;
+            const float gap = 8f;
+            float availableRight = width - rightGroupStartOffset - gap;
             float x = 12f;
             LayoutLeftToolbarButton(_returnEditButton, ref x, y, 96f);
             LayoutLeftToolbarButton(_addTalkEditButton, ref x, y, 100f);
-            if (showAddOption)
-                LayoutLeftToolbarButton(_addOptionEditButton, ref x, y, 100f);
-            if (showPreview)
-                LayoutLeftToolbarButton(_previewEditButton, ref x, y, 104f);
-            if (showDuplicate)
-                LayoutLeftToolbarButton(_duplicateEditButton, ref x, y, 72f);
+            // 可选项先尝试预览/复制，再始终保留删除；剩余空间再给撤销/重做。
+            // 新增选项在空白右键菜单仍可达，窄屏不应挤掉更常用的删除。
+            float optionalStart = x;
+            float trailingCore = 72f + gap;
+            LayoutOptionalLeftToolbarButton(
+                _addOptionEditButton, ref x, y, 100f,
+                availableRight - trailingCore);
+            LayoutOptionalLeftToolbarButton(
+                _previewEditButton, ref x, y, 104f,
+                availableRight - trailingCore);
+            LayoutOptionalLeftToolbarButton(
+                _duplicateEditButton, ref x, y, 72f,
+                availableRight - trailingCore);
+            if (x + 72f > availableRight)
+            {
+                x = optionalStart;
+                if (_addOptionEditButton != null)
+                    _addOptionEditButton.gameObject.SetActive(false);
+                if (_previewEditButton != null)
+                    _previewEditButton.gameObject.SetActive(false);
+                if (_duplicateEditButton != null)
+                    _duplicateEditButton.gameObject.SetActive(false);
+            }
             LayoutLeftToolbarButton(_deleteEditButton, ref x, y, 72f);
-            if (showUndo)
-                LayoutLeftToolbarButton(_undoEditButton, ref x, y, 72f);
-            if (showRedo)
-                LayoutLeftToolbarButton(_redoEditButton, ref x, y, 72f);
+            LayoutOptionalLeftToolbarButton(
+                _undoEditButton, ref x, y, 72f, availableRight);
+            LayoutOptionalLeftToolbarButton(
+                _redoEditButton, ref x, y, 72f, availableRight);
 
-            // 保存/放弃固定靠右、关闭按钮在它们右侧，低分辨率时仍保留核心出口。
+            // 保存/放弃固定靠右、关闭按钮在它们右侧；属性按钮也始终可达。
             if (_inspectorToggleButton != null)
                 Place((RectTransform)_inspectorToggleButton.transform,
                     1f, 1f, 1f, 0.5f, -284f, y, 96f, ToolbarControlHeight);
@@ -1816,6 +1825,15 @@ namespace StudentAgeEditorPlus.Patches
             if (_discardEditButton != null)
                 Place((RectTransform)_discardEditButton.transform,
                     1f, 1f, 1f, 0.5f, -92f, y, 80f, ToolbarControlHeight);
+        }
+
+        private static void LayoutOptionalLeftToolbarButton(
+            Button button, ref float x, float y, float width, float availableRight)
+        {
+            if (button == null) return;
+            bool show = x + width <= availableRight;
+            button.gameObject.SetActive(show);
+            if (show) LayoutLeftToolbarButton(button, ref x, y, width);
         }
 
         private static void LayoutLeftToolbarButton(
@@ -1946,11 +1964,13 @@ namespace StudentAgeEditorPlus.Patches
             {
                 _hasLoggedUiMetrics = true;
                 Plugin.Log?.LogInfo(
-                    "[StoryGraph.UI] 屏幕=" + Screen.width + "x" + Screen.height
+                    "[StoryGraph.UI] 程序集=" + GetType().Assembly.Location
+                    + "，屏幕=" + Screen.width + "x" + Screen.height
                     + "，参考分辨率=" + scaler.referenceResolution.x + "x"
-                    + scaler.referenceResolution.y + "，CanvasScale="
-                    + scaler.scaleFactor.ToString("0.###") + "，逻辑画布="
-                    + _canvasRect.rect.width.ToString("0.#") + "x"
+                    + scaler.referenceResolution.y + "，ScalerMode=" + scaler.uiScaleMode
+                    + "，ScalerScale=" + scaler.scaleFactor.ToString("0.###")
+                    + "，CanvasScale=" + canvas.scaleFactor.ToString("0.###")
+                    + "，逻辑画布=" + _canvasRect.rect.width.ToString("0.#") + "x"
                     + _canvasRect.rect.height.ToString("0.#"));
             }
         }
@@ -1994,32 +2014,23 @@ namespace StudentAgeEditorPlus.Patches
             if (sourceCanvas != null)
             {
                 canvas.targetDisplay = sourceCanvas.targetDisplay;
-                canvas.pixelPerfect = sourceCanvas.pixelPerfect;
                 canvas.sortingLayerID = sourceCanvas.sortingLayerID;
                 canvas.additionalShaderChannels = sourceCanvas.additionalShaderChannels;
             }
 
-            if (sourceScaler == null)
-            {
-                scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-                scaler.referenceResolution = new Vector2(1920f, 1080f);
-                scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
-                scaler.matchWidthOrHeight = 0.5f;
-                return;
-            }
-
-            // 不猜测游戏预制体究竟使用 1920×1080 还是 2560×1440；直接复制
-            // 当前实际根 Canvas 的缩放策略，分辨率、窗口模式和 UI 设置都保持一致。
-            scaler.uiScaleMode = sourceScaler.uiScaleMode;
-            scaler.scaleFactor = sourceScaler.scaleFactor;
-            scaler.referencePixelsPerUnit = sourceScaler.referencePixelsPerUnit;
-            scaler.referenceResolution = sourceScaler.referenceResolution;
-            scaler.screenMatchMode = sourceScaler.screenMatchMode;
-            scaler.matchWidthOrHeight = sourceScaler.matchWidthOrHeight;
-            scaler.physicalUnit = sourceScaler.physicalUnit;
-            scaler.fallbackScreenDPI = sourceScaler.fallbackScreenDPI;
-            scaler.defaultSpriteDPI = sourceScaler.defaultSpriteDPI;
-            scaler.dynamicPixelsPerUnit = sourceScaler.dynamicPixelsPerUnit;
+            // 用整数像素倍率兼顾清晰度与高 DPI 可读性。1080p/1440p 使用 1x，
+            // 避免参考分辨率造成 0.75 等非整数二次缩放；4K 使用 2x，使固定字号
+            // 和点击目标保持接近 1080p 的物理比例，同时仍落在整数像素栅格。
+            float pixelScale = Screen.width >= UiScale2xMinWidth
+                && Screen.height >= UiScale2xMinHeight
+                ? 2f
+                : 1f;
+            canvas.pixelPerfect = true;
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
+            scaler.scaleFactor = pixelScale;
+            scaler.referencePixelsPerUnit = sourceScaler != null
+                ? sourceScaler.referencePixelsPerUnit
+                : 100f;
         }
 
         private void BuildViewport()
