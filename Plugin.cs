@@ -15,7 +15,7 @@ namespace StudentAgeEditorPlus
     {
         public const string PluginGuid = "com.studentage.editorplus";
         public const string PluginName = "StudentAge Editor Plus";
-        public const string PluginVersion = "0.4.0";
+        public const string PluginVersion = "0.4.1";
 
         internal static ManualLogSource Log;
         internal static Harmony HarmonyInstance;

@@ -548,4 +548,257 @@ namespace StudentAgeEditorPlus.Patches
             catch (Exception e) { Plugin.Log.LogError($"[SelectBgCgHighlight] {e}"); }
         }
     }
+
+    // ───────────────────────────────────────────────────────────────────
+    //  D. 人物选择器搜索（ModSelectRoleView）
+    // ───────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(ModSelectRoleView), "OnOpen")]
+    internal static class SelectRoleSearchPatch
+    {
+        private static readonly ConditionalWeakTable<ModSelectRoleView, SelectPickerState> _states = new();
+
+        private static void Postfix(ModSelectRoleView __instance)
+        {
+            try
+            {
+                var containerRt = SearchBarUtil.FindScrollContainer(__instance.itemgroup_content);
+                if (containerRt == null) return;
+                var parent = containerRt.parent;
+                if (parent == null) return;
+
+                SearchBarUtil.DestroyExisting(parent);
+
+                var (barGo, input) = SearchBarUtil.Create(parent, "搜索编号（ID）或人物名…");
+                var barRt = barGo.GetComponent<RectTransform>();
+                var originalOffsetMax = SearchBarUtil.PlaceAboveScroll(
+                    containerRt, barRt, SearchBarUtil.SearchBarHeight);
+
+                var cleanup = barGo.GetComponent<SearchBarCleanup>();
+                cleanup.ScrollToRestore = containerRt;
+                cleanup.OriginalOffsetMax = originalOffsetMax;
+
+                var clamp = barGo.AddComponent<SearchBarGridClamp>();
+                clamp.itemGroup = __instance.itemgroup_content;
+                clamp.barRt = barRt;
+
+                var ids = Traverse.Create(__instance).Field("ids").GetValue<List<int>>();
+                var state = new SelectPickerState
+                {
+                    Input = input,
+                    AllIds = ids != null ? new List<int>(ids) : new List<int>()
+                };
+                _states.Remove(__instance);
+                _states.Add(__instance, state);
+
+                input.onValueChanged.AddListener(text =>
+                {
+                    try
+                    {
+                        if (__instance == null || __instance.gameObject == null) return;
+                        ApplyFilter(__instance, text);
+                    }
+                    catch (Exception e) { Plugin.Log.LogError($"[SelectRoleSearch] {e}"); }
+                });
+
+                Plugin.Log.LogInfo("[SelectRoleSearch] 搜索栏已注入。");
+            }
+            catch (Exception e) { Plugin.Log.LogError($"[SelectRoleSearchInit] {e}"); }
+        }
+
+        internal static void ApplyFilter(ModSelectRoleView view, string searchText)
+        {
+            var state = GetState(view);
+            if (state?.AllIds == null) return;
+
+            var t = Traverse.Create(view);
+            var ids = t.Field("ids").GetValue<List<int>>();
+            if (ids == null) return;
+
+            state.CurrentSearchText = string.IsNullOrWhiteSpace(searchText)
+                ? null
+                : searchText.Trim();
+
+            var personCfgs = t.Field("personCfgs")
+                .GetValue<Dictionary<int, PersonCfg>>();
+
+            ids.Clear();
+            foreach (var id in state.AllIds)
+            {
+                string name = null;
+                if (personCfgs != null
+                    && personCfgs.TryGetValue(id, out var cfg)
+                    && cfg != null)
+                {
+                    name = cfg.name;
+                }
+
+                if (SearchMatch.Match(searchText, id, name))
+                    ids.Add(id);
+            }
+
+            int cntPerPage = t.Field("cntPerPage").GetValue<int>();
+            if (cntPerPage <= 0) cntPerPage = 40;
+            int totalPage = Mathf.CeilToInt((float)ids.Count / cntPerPage);
+            t.Field("totalPage").SetValue(totalPage);
+
+            if (view.txt_page_total != null)
+                view.txt_page_total.text = totalPage.ToString();
+
+            t.Field("curPage").SetValue(1);
+            view.SetPage(1);
+        }
+
+        internal static SelectPickerState GetState(ModSelectRoleView view)
+        {
+            _states.TryGetValue(view, out var state);
+            return state;
+        }
+    }
+
+    [HarmonyPatch(typeof(ModSelectRoleView), "OnRender")]
+    internal static class SelectRoleHighlightPatch
+    {
+        private static void Postfix(ModSelectRoleView __instance, UICell _cell)
+        {
+            try
+            {
+                var state = SelectRoleSearchPatch.GetState(__instance);
+                if (string.IsNullOrEmpty(state?.CurrentSearchText)) return;
+                if (_cell is Cell_ModEvtBrowserItemUI cell && cell.txt_item != null)
+                {
+                    cell.txt_item.supportRichText = true;
+                    cell.txt_item.text = SearchMatch.Highlight(
+                        cell.txt_item.text, state.CurrentSearchText);
+                }
+            }
+            catch (Exception e) { Plugin.Log.LogError($"[SelectRoleHighlight] {e}"); }
+        }
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    //  E. 音频选择器搜索（ModSelectAudioView）
+    // ───────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(ModSelectAudioView), "OnOpen")]
+    internal static class SelectAudioSearchPatch
+    {
+        private static readonly ConditionalWeakTable<ModSelectAudioView, SelectPickerState> _states = new();
+
+        private static void Postfix(ModSelectAudioView __instance)
+        {
+            try
+            {
+                var containerRt = SearchBarUtil.FindScrollContainer(__instance.itemgroup_content);
+                if (containerRt == null) return;
+                var parent = containerRt.parent;
+                if (parent == null) return;
+
+                SearchBarUtil.DestroyExisting(parent);
+
+                var (barGo, input) = SearchBarUtil.Create(parent, "搜索编号（ID）或音频名…");
+                var barRt = barGo.GetComponent<RectTransform>();
+                var originalOffsetMax = SearchBarUtil.PlaceAboveScroll(
+                    containerRt, barRt, SearchBarUtil.SearchBarHeight);
+
+                var cleanup = barGo.GetComponent<SearchBarCleanup>();
+                cleanup.ScrollToRestore = containerRt;
+                cleanup.OriginalOffsetMax = originalOffsetMax;
+
+                var clamp = barGo.AddComponent<SearchBarGridClamp>();
+                clamp.itemGroup = __instance.itemgroup_content;
+                clamp.barRt = barRt;
+
+                var ids = Traverse.Create(__instance).Field("ids").GetValue<List<int>>();
+                var state = new SelectPickerState
+                {
+                    Input = input,
+                    AllIds = ids != null ? new List<int>(ids) : new List<int>()
+                };
+                _states.Remove(__instance);
+                _states.Add(__instance, state);
+
+                input.onValueChanged.AddListener(text =>
+                {
+                    try
+                    {
+                        if (__instance == null || __instance.gameObject == null) return;
+                        ApplyFilter(__instance, text);
+                    }
+                    catch (Exception e) { Plugin.Log.LogError($"[SelectAudioSearch] {e}"); }
+                });
+
+                Plugin.Log.LogInfo("[SelectAudioSearch] 搜索栏已注入。");
+            }
+            catch (Exception e) { Plugin.Log.LogError($"[SelectAudioSearchInit] {e}"); }
+        }
+
+        internal static void ApplyFilter(ModSelectAudioView view, string searchText)
+        {
+            var state = GetState(view);
+            if (state?.AllIds == null) return;
+
+            var t = Traverse.Create(view);
+            var ids = t.Field("ids").GetValue<List<int>>();
+            if (ids == null) return;
+
+            state.CurrentSearchText = string.IsNullOrWhiteSpace(searchText)
+                ? null
+                : searchText.Trim();
+
+            var cfgs = t.Field("cfgs").GetValue<Dictionary<int, AudioCfg>>();
+
+            ids.Clear();
+            foreach (var id in state.AllIds)
+            {
+                string name = null;
+                if (cfgs != null
+                    && cfgs.TryGetValue(id, out var cfg)
+                    && cfg != null)
+                {
+                    name = cfg.name;
+                }
+
+                if (SearchMatch.Match(searchText, id, name))
+                    ids.Add(id);
+            }
+
+            int cntPerPage = t.Field("cntPerPage").GetValue<int>();
+            if (cntPerPage <= 0) cntPerPage = 40;
+            int totalPage = Mathf.CeilToInt((float)ids.Count / cntPerPage);
+            t.Field("totalPage").SetValue(totalPage);
+
+            if (view.txt_page_total != null)
+                view.txt_page_total.text = totalPage.ToString();
+
+            t.Field("curPage").SetValue(1);
+            view.SetPage(1);
+        }
+
+        internal static SelectPickerState GetState(ModSelectAudioView view)
+        {
+            _states.TryGetValue(view, out var state);
+            return state;
+        }
+    }
+
+    [HarmonyPatch(typeof(ModSelectAudioView), "OnRender")]
+    internal static class SelectAudioHighlightPatch
+    {
+        private static void Postfix(ModSelectAudioView __instance, UICell _cell)
+        {
+            try
+            {
+                var state = SelectAudioSearchPatch.GetState(__instance);
+                if (string.IsNullOrEmpty(state?.CurrentSearchText)) return;
+                if (_cell is Cell_ModEvtBrowserItemUI cell && cell.txt_item != null)
+                {
+                    cell.txt_item.supportRichText = true;
+                    cell.txt_item.text = SearchMatch.Highlight(
+                        cell.txt_item.text, state.CurrentSearchText);
+                }
+            }
+            catch (Exception e) { Plugin.Log.LogError($"[SelectAudioHighlight] {e}"); }
+        }
+    }
 }
