@@ -15,7 +15,7 @@ namespace StudentAgeEditorPlus
     {
         public const string PluginGuid = "com.studentage.editorplus";
         public const string PluginName = "StudentAge Editor Plus";
-        public const string PluginVersion = "0.4.1";
+        public const string PluginVersion = "0.4.22";
 
         internal static ManualLogSource Log;
         internal static Harmony HarmonyInstance;
@@ -25,6 +25,7 @@ namespace StudentAgeEditorPlus
         private void Awake()
         {
             Log = Logger;
+            Patches.EditorAudioRuntime.Initialize(Config);
 
             // 排查工具：场景触发诊断（默认关闭）。需要时把配置项设为 true 再启动游戏。
             _runDiagnostic = Config.Bind(

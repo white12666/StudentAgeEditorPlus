@@ -505,8 +505,7 @@ namespace StudentAgeEditorPlus.Patches
                 && audioMap.TryGetValue(screen.BgmAudioId, out AudioCfg audio)
                 && audio.type == 1)
             {
-                AudioMgrEx.PlayEvtBgm(
-                    screen.BgmAudioId, true, null, audioMap);
+                EditorAudioRuntime.PlayPreviewMusic(screen.BgmAudioId, audioMap);
                 t.Field("playEvtGroupBgm").SetValue(false);
             }
             else if (screen.GroupBgmConsumed)
@@ -589,6 +588,7 @@ namespace StudentAgeEditorPlus.Patches
         {
             try
             {
+                EditorAudioRuntime.BeginPreview(__instance);
                 TalkPreviewAudioFix.CaptureBeforePreview(__instance);
                 TalkPreviewBootstrapContext context = null;
                 if (__instance.parms != null && __instance.parms.Length > 12)
@@ -609,6 +609,7 @@ namespace StudentAgeEditorPlus.Patches
         {
             try
             {
+                EditorAudioRuntime.EndPreview(__instance);
                 if (TalkPreviewBootstrapRuntime.TryGet(
                         __instance, out TalkPreviewBootstrapContext context))
                 {

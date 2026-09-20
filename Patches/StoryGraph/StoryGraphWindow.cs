@@ -9,8 +9,11 @@ using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.Controls;
 using UnityEngine.UI;
+using TMPro;
 using Newtonsoft.Json;
 using View.Mod;
+using InputField = TMPro.TMP_InputField;
+using Text = TMPro.TextMeshProUGUI;
 
 namespace StudentAgeEditorPlus.Patches
 {
@@ -222,6 +225,7 @@ namespace StudentAgeEditorPlus.Patches
         [NonSerialized] private Button _edgeLabelModeButton;
         [NonSerialized] private Text _matchCounterText;
         [NonSerialized] private Font _font;
+        [NonSerialized] private TMP_FontAsset _sdfFont;
         [NonSerialized] private GameObject _viewToolbarGroup;
         [NonSerialized] private GameObject _editToolbarGroup;
         [NonSerialized] private Button _previewViewButton;
@@ -590,6 +594,7 @@ namespace StudentAgeEditorPlus.Patches
             _graphToastGroup = null;
             _graphToastUntil = 0f;
             _font = null;
+            _sdfFont = null;
             _viewToolbarGroup = null;
             _editToolbarGroup = null;
             _previewViewButton = null;
@@ -735,6 +740,7 @@ namespace StudentAgeEditorPlus.Patches
             _graphToastGroup = null;
             _graphToastUntil = 0f;
             _font = null;
+            _sdfFont = null;
             _viewToolbarGroup = null;
             _editToolbarGroup = null;
             _previewViewButton = null;
@@ -1735,9 +1741,9 @@ namespace StudentAgeEditorPlus.Patches
             // “上个结果”（仍可用 Shift+Enter），保证搜索框和关闭按钮不会重叠。
             bool showLabelMode = width >= 1180f;
             bool showPreview = width >= 1280f;
-            bool showNext = width >= 850f;
-            bool showPrevious = width >= 1080f;
-            bool showCounter = width >= 1360f;
+            bool showNext = width >= 946f;
+            bool showPrevious = width >= 1176f;
+            bool showCounter = width >= 1456f;
             if (_edgeLabelModeButton != null)
                 _edgeLabelModeButton.gameObject.SetActive(showLabelMode);
             if (_previewViewButton != null)
@@ -1749,8 +1755,8 @@ namespace StudentAgeEditorPlus.Patches
             if (_matchCounterText != null)
                 _matchCounterText.gameObject.SetActive(showCounter);
 
-            float rightReserve = showCounter ? 424f
-                : (showPrevious ? 310f : (showNext ? 210f : 108f));
+            float rightReserve = showCounter ? 520f
+                : (showPrevious ? 406f : (showNext ? 306f : 204f));
             RectTransform searchRect = _searchInput.transform as RectTransform;
             if (searchRect == null) return;
             if (_edgeLabelModeButton != null)
@@ -1780,7 +1786,7 @@ namespace StudentAgeEditorPlus.Patches
             // 左侧按钮必须在右侧属性/保存/放弃/关闭组之前结束。旧版只按固定
             // 宽度阈值显隐，1024px 时“重做”会压到“隐藏属性”。按实际累计宽度
             // 逐项装入，优先保留返回、新增对话、删除；其余仍有快捷键/右键入口。
-            const float rightGroupStartOffset = 380f;
+            const float rightGroupStartOffset = 476f;
             const float gap = 8f;
             float availableRight = width - rightGroupStartOffset - gap;
             float x = 12f;
@@ -1818,13 +1824,13 @@ namespace StudentAgeEditorPlus.Patches
             // 保存/放弃固定靠右、关闭按钮在它们右侧；属性按钮也始终可达。
             if (_inspectorToggleButton != null)
                 Place((RectTransform)_inspectorToggleButton.transform,
-                    1f, 1f, 1f, 0.5f, -284f, y, 96f, ToolbarControlHeight);
+                    1f, 1f, 1f, 0.5f, -380f, y, 96f, ToolbarControlHeight);
             if (_saveEditButton != null)
                 Place((RectTransform)_saveEditButton.transform,
-                    1f, 1f, 1f, 0.5f, -180f, y, 80f, ToolbarControlHeight);
+                    1f, 1f, 1f, 0.5f, -276f, y, 80f, ToolbarControlHeight);
             if (_discardEditButton != null)
                 Place((RectTransform)_discardEditButton.transform,
-                    1f, 1f, 1f, 0.5f, -92f, y, 80f, ToolbarControlHeight);
+                    1f, 1f, 1f, 0.5f, -188f, y, 80f, ToolbarControlHeight);
         }
 
         private static void LayoutOptionalLeftToolbarButton(
@@ -1909,8 +1915,12 @@ namespace StudentAgeEditorPlus.Patches
         {
             if (_canvasRoot != null) return;
 
-            // 先取字体再建任何 Text，避免 FindUiFont 找到我们自己建的控件。
+            // 先取字体并生成共享动态 SDF，再建任何文字控件，避免 FindUiFont
+            // 找到剧情图自己创建的 TMP 组件。
             _font = SearchBarUtil.FindUiFont();
+            _sdfFont = StoryGraphDynamicSdfFontAsset.GetOrCreate(_font,
+                "剧情图编辑查看刷新显示全图连线关键预览本句搜索编号或文字回车定位"
+                + "属性检查器基础人物画面逻辑小游戏高级保存放弃关闭");
             // 程序化生成圆角九宫格贴图（必须先于任何控件创建）。
             BuildSprites();
 
@@ -2152,15 +2162,15 @@ namespace StudentAgeEditorPlus.Patches
                 _viewToolbarGroup, "搜索编号或文字，回车定位…", x, y, 320f);
 
             _nextMatchButton = CreateToolbarButton(
-                _viewToolbarGroup, "下个结果", -92f, y, 94f,
+                _viewToolbarGroup, "下个结果", -188f, y, 94f,
                 delegate { FocusMatch(1); }, true);
             _previousMatchButton = CreateToolbarButton(
-                _viewToolbarGroup, "上个结果", -194f, y, 94f,
+                _viewToolbarGroup, "上个结果", -290f, y, 94f,
                 delegate { FocusMatch(-1); }, true);
             _matchCounterText = CreateText(_viewToolbarGroup, "MatchCounter",
                 SecondaryFontSize, FontStyle.Normal, SubtitleColor, TextAnchor.MiddleRight);
             Place(_matchCounterText.rectTransform,
-                1f, 1f, 1f, 0.5f, -296f, y, 108f, ToolbarControlHeight);
+                1f, 1f, 1f, 0.5f, -392f, y, 108f, ToolbarControlHeight);
 
             _returnEditButton = CreateToolbarButton(
                 _editToolbarGroup, "返回查看", 12f, y, 96f, RequestExitEditMode);
@@ -2180,15 +2190,18 @@ namespace StudentAgeEditorPlus.Patches
             _redoEditButton = CreateToolbarButton(
                 _editToolbarGroup, "重做", 684f, y, 72f, RedoEdit);
             _inspectorToggleButton = CreateToolbarButton(
-                _editToolbarGroup, "隐藏属性", -284f, y, 96f,
+                _editToolbarGroup, "隐藏属性", -380f, y, 96f,
                 ToggleInspector, true);
             _saveEditButton = CreateToolbarButton(
-                _editToolbarGroup, "保存", -180f, y, 80f, SaveEditSession, true);
+                _editToolbarGroup, "保存", -276f, y, 80f, SaveEditSession, true);
             _discardEditButton = CreateToolbarButton(
-                _editToolbarGroup, "放弃", -92f, y, 80f, RequestDiscardEdit, true);
+                _editToolbarGroup, "放弃", -188f, y, 80f, RequestDiscardEdit, true);
 
             // 关闭按钮不属于任一模式；有未保存草稿时 RequestClose 会拒绝关闭。
             CreateToolbarButton(bar, "关闭", -12f, y, 72f, RequestClose, true);
+            var bgmButton = EditorAudioButton.Create(bar.transform, _canvasRect, _font);
+            Place((RectTransform)bgmButton.transform,
+                1f, 1f, 1f, 0.5f, -92f, y, EditorAudioButton.Width, ToolbarControlHeight);
 
             UpdateToolbarMode();
             UpdateResponsiveToolbarLayout();
@@ -2262,18 +2275,20 @@ namespace StudentAgeEditorPlus.Patches
             // 都新建一个 Text，InputField 只会管理最后一个，之前的提示仍留在
             // 输入框里持续绘制，最终就会叠成一团。占位文本属于控件本身，应当
             // 像 textComponent 一样只创建一次，之后只更新内容与样式。
+            Transform viewport = input.textViewport != null
+                ? input.textViewport : input.transform;
             Text placeholder = input.placeholder as Text;
             if (placeholder == null
-                || placeholder.transform.parent != input.transform)
+                || placeholder.transform.parent != viewport)
             {
-                Transform existing = input.transform.Find("Placeholder");
+                Transform existing = viewport.Find("Placeholder");
                 placeholder = existing != null
                     ? existing.GetComponent<Text>()
                     : null;
             }
             if (placeholder == null)
             {
-                placeholder = CreateText(input.gameObject, "Placeholder",
+                placeholder = CreateText(viewport.gameObject, "Placeholder",
                     SecondaryFontSize, FontStyle.Normal,
                     new Color(0.42f, 0.34f, 0.25f, 0.62f),
                     input.lineType == InputField.LineType.MultiLineNewline
@@ -2281,15 +2296,16 @@ namespace StudentAgeEditorPlus.Patches
                         : TextAnchor.MiddleLeft);
             }
             placeholder.fontSize = SecondaryFontSize;
-            placeholder.fontStyle = FontStyle.Normal;
+            placeholder.fontStyle = FontStyles.Normal;
             placeholder.color = new Color(0.42f, 0.34f, 0.25f, 0.62f);
-            placeholder.alignment =
+            placeholder.alignment = ToTmpAlignment(
                 input.lineType == InputField.LineType.MultiLineNewline
                     ? TextAnchor.UpperLeft
-                    : TextAnchor.MiddleLeft;
-            placeholder.text = value ?? string.Empty;
-            placeholder.horizontalOverflow = HorizontalWrapMode.Wrap;
-            placeholder.verticalOverflow = VerticalWrapMode.Truncate;
+                    : TextAnchor.MiddleLeft);
+            placeholder.enableWordWrapping = true;
+            placeholder.overflowMode = TextOverflowModes.Truncate;
+            placeholder.richText = false;
+            SetSdfText(placeholder, value);
             Stretch(placeholder.rectTransform, 9f, 6f, 9f, 6f);
             input.placeholder = placeholder;
         }
@@ -2305,21 +2321,31 @@ namespace StudentAgeEditorPlus.Patches
             image.color = HexColor("F7F1E3");
             image.raycastTarget = true;
             ApplySprite(image, _inputSprite);
-            go.AddComponent<RectMask2D>();
+
+            GameObject textArea = CreateUIObject("Text Area", go.transform);
+            RectTransform textAreaRect = (RectTransform)textArea.transform;
+            Stretch(textAreaRect, 0f, 0f, 0f, 0f);
+            textArea.AddComponent<RectMask2D>();
+
             InputField input = go.AddComponent<InputField>();
+            input.targetGraphic = image;
+            input.textViewport = textAreaRect;
             input.contentType = InputField.ContentType.Standard;
             input.lineType = multiline
                 ? InputField.LineType.MultiLineNewline
                 : InputField.LineType.SingleLine;
+            input.richText = false;
+            input.caretWidth = 2;
             input.caretColor = HexColor("824C24");
             input.selectionColor = new Color(0.89f, 0.62f, 0.29f, 0.4f);
-            Text text = CreateText(go, "Text", SecondaryFontSize,
+            Text text = CreateText(textArea, "Text", SecondaryFontSize,
                 FontStyle.Normal, BodyTextColor,
                 multiline ? TextAnchor.UpperLeft : TextAnchor.MiddleLeft);
-            text.horizontalOverflow = HorizontalWrapMode.Wrap;
-            text.verticalOverflow = multiline
-                ? VerticalWrapMode.Overflow
-                : VerticalWrapMode.Truncate;
+            text.enableWordWrapping = true;
+            text.overflowMode = multiline
+                ? TextOverflowModes.Overflow
+                : TextOverflowModes.Truncate;
+            text.richText = false;
             Stretch(text.rectTransform, 9f, 6f, 9f, 6f);
             input.textComponent = text;
             return input;
@@ -3329,16 +3355,69 @@ namespace StudentAgeEditorPlus.Patches
         {
             GameObject go = CreateUIObject(name, parent.transform);
             var text = go.AddComponent<Text>();
-            text.font = _font;
+            text.font = _sdfFont;
             text.fontSize = fontSize;
-            text.fontStyle = style;
+            text.fontStyle = ToTmpFontStyle(style);
             text.color = color;
-            text.alignment = anchor;
-            text.horizontalOverflow = HorizontalWrapMode.Wrap;
-            text.verticalOverflow = VerticalWrapMode.Truncate;
-            text.supportRichText = false;
+            text.alignment = ToTmpAlignment(anchor);
+            text.enableAutoSizing = false;
+            text.enableWordWrapping = true;
+            text.overflowMode = TextOverflowModes.Truncate;
+            text.richText = false;
             text.raycastTarget = false;
             return text;
+        }
+
+        private void SetSdfText(TMP_Text text, string value)
+        {
+            if (text == null) return;
+            if (text.font == null && _sdfFont != null) text.font = _sdfFont;
+            string next = value ?? string.Empty;
+            StoryGraphDynamicSdfFontAsset.PrepareCharacters(text.font, next);
+            if (!string.Equals(text.text, next, StringComparison.Ordinal))
+                text.text = next;
+        }
+
+        private static FontStyles ToTmpFontStyle(FontStyle style)
+        {
+            switch (style)
+            {
+                case FontStyle.Bold:
+                    return FontStyles.Bold;
+                case FontStyle.Italic:
+                    return FontStyles.Italic;
+                case FontStyle.BoldAndItalic:
+                    return FontStyles.Bold | FontStyles.Italic;
+                default:
+                    return FontStyles.Normal;
+            }
+        }
+
+        private static TextAlignmentOptions ToTmpAlignment(TextAnchor anchor)
+        {
+            switch (anchor)
+            {
+                case TextAnchor.UpperLeft:
+                    return TextAlignmentOptions.TopLeft;
+                case TextAnchor.UpperCenter:
+                    return TextAlignmentOptions.Top;
+                case TextAnchor.UpperRight:
+                    return TextAlignmentOptions.TopRight;
+                case TextAnchor.MiddleLeft:
+                    return TextAlignmentOptions.Left;
+                case TextAnchor.MiddleCenter:
+                    return TextAlignmentOptions.Center;
+                case TextAnchor.MiddleRight:
+                    return TextAlignmentOptions.Right;
+                case TextAnchor.LowerLeft:
+                    return TextAlignmentOptions.BottomLeft;
+                case TextAnchor.LowerCenter:
+                    return TextAlignmentOptions.Bottom;
+                case TextAnchor.LowerRight:
+                    return TextAlignmentOptions.BottomRight;
+                default:
+                    return TextAlignmentOptions.Center;
+            }
         }
 
         private Button CreateToolbarButton(
@@ -3390,20 +3469,34 @@ namespace StudentAgeEditorPlus.Patches
             bg.raycastTarget = true;
             ApplySprite(bg, _inputSprite);
 
+            GameObject textArea = CreateUIObject("Text Area", go.transform);
+            RectTransform textAreaRect = (RectTransform)textArea.transform;
+            Stretch(textAreaRect, 12f, 0f, 12f, 0f);
+            textArea.AddComponent<RectMask2D>();
+
             var input = go.AddComponent<InputField>();
+            input.targetGraphic = bg;
+            input.textViewport = textAreaRect;
             input.contentType = InputField.ContentType.Standard;
+            input.lineType = InputField.LineType.SingleLine;
             input.characterLimit = 0;
+            input.richText = false;
+            input.caretWidth = 2;
             input.caretColor = HexColor("824C24");
             input.selectionColor = new Color(0.89f, 0.62f, 0.29f, 0.4f);
 
-            Text ph = CreateText(go, "Placeholder", ToolbarFontSize, FontStyle.Normal,
+            Text ph = CreateText(textArea, "Placeholder", ToolbarFontSize, FontStyle.Normal,
                 HexColor("9F9F9F"), TextAnchor.MiddleLeft);
-            Stretch(ph.rectTransform, 12f, 0f, 12f, 0f);
-            ph.text = placeholder;
+            ph.enableWordWrapping = false;
+            ph.overflowMode = TextOverflowModes.Ellipsis;
+            Stretch(ph.rectTransform, 0f, 0f, 0f, 0f);
+            SetSdfText(ph, placeholder);
 
-            Text txt = CreateText(go, "Text", ToolbarFontSize, FontStyle.Normal,
+            Text txt = CreateText(textArea, "Text", ToolbarFontSize, FontStyle.Normal,
                 HexColor("824C24"), TextAnchor.MiddleLeft);
-            Stretch(txt.rectTransform, 12f, 0f, 12f, 0f);
+            txt.enableWordWrapping = false;
+            txt.overflowMode = TextOverflowModes.Overflow;
+            Stretch(txt.rectTransform, 0f, 0f, 0f, 0f);
 
             input.textComponent = txt;
             input.placeholder = ph;
@@ -4477,7 +4570,7 @@ namespace StudentAgeEditorPlus.Patches
             nv.Title.rectTransform.offsetMax = new Vector2(-8f, -4f);
 
             nv.Subtitle = CreateText(
-                nv.CardRoot, "Subtitle", 11, FontStyle.Normal,
+                nv.CardRoot, "Subtitle", 11, FontStyle.Bold,
                 SubtitleColor, TextAnchor.UpperLeft);
             nv.Subtitle.lineSpacing = 1.2f;
             // 摘要：标题之下填满剩余区域，自动换行截断

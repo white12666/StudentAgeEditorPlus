@@ -1,0 +1,95 @@
+using StudentAgeEditorPlus.Patches;
+
+int count = 0;
+void Check(string name, bool condition)
+{
+    if (!condition) throw new Exception(name);
+    Console.WriteLine("PASS " + name);
+    count++;
+}
+
+var policy = new EditorAudioPolicy();
+var page = new object();
+var child = new object();
+var preview = new object();
+Check("Outside editor does not mute normal gameplay", !policy.Active && !policy.MuteMusic);
+policy.Quiet = true;
+Check("Saved quiet preference does not affect gameplay", !policy.MuteMusic);
+long preEditor = policy.Generation;
+policy.Enter(page);
+Check("Entering editor invalidates a pre-editor pending music load", policy.Generation != preEditor);
+policy.Enter(page);
+Check("Editor respects remembered preference", policy.Active && policy.MuteMusic);
+policy.Enter(child);
+policy.Leave(page);
+policy.Leave(page);
+Check("Nested editor keeps the session after parent close", policy.Active && policy.MuteMusic);
+policy.Quiet = false;
+Check("Toggle affects the shared session", !policy.MuteMusic && policy.Label == "BGM");
+policy.Quiet = true;
+Check("Muted tooltip offers restore", policy.Hint.Contains("恢复"));
+Check("Ambient music load can continue silently", policy.Request(false, out long ambient));
+policy.BeginPreview(preview);
+Check("Opening preview does not unmute inherited ambient music", policy.MuteMusic && !policy.PreviewMusic);
+Check("Pending ambient callback is invalidated on preview entry", !policy.IsCurrent(ambient));
+Check("Ambient playlist cannot steal preview channel", !policy.Request(false, out _));
+Check("Preview request accepted", policy.Request(true, out long first));
+Check("Loading preview stays muted", policy.MuteMusic);
+Check("A newer preview request supersedes earlier load", policy.Request(true, out long second));
+Check("Late preview callback cannot play", !policy.Complete(first, true, true));
+Check("Failed load does not unmute ambient", policy.Complete(second, true, false) && policy.MuteMusic);
+Check("Retry after failure is accepted", policy.Request(true, out long retry));
+Check("Valid preview starts only at completed load", policy.Complete(retry, true, true) && !policy.MuteMusic);
+Check("Audition state is distinct", policy.PreviewMusic && policy.Label == "试听中" && policy.Hint.Contains("试听"));
+policy.Quiet = false;
+policy.Quiet = true;
+Check("Changing editor preference does not cut a preview", !policy.MuteMusic);
+Check("Stale preview close is ignored", !policy.EndPreview(new object()) && policy.PreviewMusic);
+Check("Pending next preview accepted", policy.Request(true, out long next));
+Check("Closing preview returns to quiet edit", policy.EndPreview(preview) && policy.MuteMusic);
+Check("Loading callback after preview close is rejected", !policy.Complete(next, true, true));
+Check("Duplicate preview close is safe", !policy.EndPreview(preview));
+Check("Restored ambient remains muted", policy.Request(false, out long restore)
+    && policy.Complete(restore, false, true) && policy.MuteMusic);
+policy.BeginPreview(preview);
+policy.Request(true, out long stopped);
+policy.Invalidate();
+Check("Stop invalidates pending audio", !policy.IsCurrent(stopped) && !policy.PreviewMusic);
+policy.Leave(child);
+Check("Preview owns a lease when editing pages close", policy.Active);
+policy.EndPreview(preview);
+Check("Last close releases the editor mute", !policy.Active && !policy.MuteMusic);
+Check("Preference survives closing all views", policy.Quiet);
+policy.Enter(page);
+policy.Request(false, out long departed);
+policy.Leave(page);
+policy.Enter(page);
+Check("Prior session callback cannot revive on reopen", !policy.IsCurrent(departed));
+for (int i = 0; i < 100; i++) policy.Quiet = !policy.Quiet;
+Check("Rapid even toggles preserve the final preference", policy.Quiet);
+policy.Leave(page);
+Check("Repeated enter uses a set rather than leaking a reference count", !policy.Active);
+policy.BeginPreview(preview);
+Check("Standalone author preview is scoped without an editor window", policy.Active && policy.InPreview);
+policy.Request(true, out long isolated);
+Check("Blocked ambient request does not invalidate a pending preview",
+    !policy.Request(false, out _) && policy.IsCurrent(isolated));
+var replacement = new object();
+policy.BeginPreview(replacement);
+Check("A new preview invalidates the previous preview's callback", !policy.IsCurrent(isolated));
+policy.Request(true, out long replacementLoad);
+Check("Old preview close cannot invalidate the replacement",
+    !policy.EndPreview(preview) && policy.IsCurrent(replacementLoad));
+policy.Complete(replacementLoad, true, true);
+policy.EndPreview(replacement);
+Check("Standalone preview exit returns to normal gameplay", !policy.Active && !policy.MuteMusic);
+policy.Quiet = false;
+policy.Enter(page);
+policy.BeginPreview(preview);
+Check("Default audible preference remains audible on preview entry", !policy.MuteMusic);
+policy.Request(true, out long failure);
+policy.Complete(failure, true, false);
+Check("Load failure does not silently change user preference", !policy.Quiet && !policy.PreviewMusic);
+policy.EndPreview(preview);
+policy.Leave(page);
+Console.WriteLine($"All {count} editor audio tests passed.");

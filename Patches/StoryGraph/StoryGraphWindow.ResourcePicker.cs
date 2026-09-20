@@ -2,9 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Config;
+using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using InputField = TMPro.TMP_InputField;
+using Text = TMPro.TextMeshProUGUI;
 
 namespace StudentAgeEditorPlus.Patches
 {
@@ -246,25 +249,37 @@ namespace StudentAgeEditorPlus.Patches
             image.color = HexColor("F7F1E3");
             image.raycastTarget = true;
             ApplySprite(image, _inputSprite);
-            go.AddComponent<RectMask2D>();
+
+            GameObject textArea = CreateUIObject("Text Area", go.transform);
+            RectTransform textAreaRect = (RectTransform)textArea.transform;
+            Stretch(textAreaRect, 10f, 4f, 10f, 4f);
+            textArea.AddComponent<RectMask2D>();
 
             InputField input = go.AddComponent<InputField>();
+            input.targetGraphic = image;
+            input.textViewport = textAreaRect;
             input.contentType = InputField.ContentType.Standard;
             input.lineType = InputField.LineType.SingleLine;
+            input.richText = false;
+            input.caretWidth = 2;
             input.caretColor = HexColor("824C24");
             input.selectionColor = new Color(0.89f, 0.62f, 0.29f, 0.4f);
 
-            Text ph = CreateText(go, "Placeholder", SecondaryFontSize,
+            Text ph = CreateText(textArea, "Placeholder", SecondaryFontSize,
                 FontStyle.Normal,
                 new Color(0.42f, 0.34f, 0.25f, 0.62f),
                 TextAnchor.MiddleLeft);
-            ph.text = placeholder;
-            Stretch(ph.rectTransform, 10f, 4f, 10f, 4f);
+            ph.enableWordWrapping = false;
+            ph.overflowMode = TextOverflowModes.Ellipsis;
+            SetSdfText(ph, placeholder);
+            Stretch(ph.rectTransform, 0f, 0f, 0f, 0f);
             input.placeholder = ph;
 
-            Text value = CreateText(go, "Text", SecondaryFontSize,
+            Text value = CreateText(textArea, "Text", SecondaryFontSize,
                 FontStyle.Normal, BodyTextColor, TextAnchor.MiddleLeft);
-            Stretch(value.rectTransform, 10f, 4f, 10f, 4f);
+            value.enableWordWrapping = false;
+            value.overflowMode = TextOverflowModes.Overflow;
+            Stretch(value.rectTransform, 0f, 0f, 0f, 0f);
             input.textComponent = value;
             return input;
         }
@@ -457,8 +472,8 @@ namespace StudentAgeEditorPlus.Patches
                                     + "[" + entry.Id.ToString(
                                         CultureInfo.InvariantCulture) + "] "
                                     + displayName;
-                visual.Label.fontStyle =
-                    selected ? FontStyle.Bold : FontStyle.Normal;
+                visual.Label.fontStyle = ToTmpFontStyle(
+                    selected ? FontStyle.Bold : FontStyle.Normal);
                 visual.Background.color = selected ? SegmentFill : PanelBg;
                 visual.Button.interactable = true;
             }

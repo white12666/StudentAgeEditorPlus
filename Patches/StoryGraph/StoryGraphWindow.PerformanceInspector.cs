@@ -5,8 +5,11 @@ using System.IO;
 using System.Linq;
 using Config;
 using Sdk;
+using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
+using InputField = TMPro.TMP_InputField;
+using Text = TMPro.TextMeshProUGUI;
 
 namespace StudentAgeEditorPlus.Patches
 {
@@ -200,8 +203,8 @@ namespace StudentAgeEditorPlus.Patches
 
             _inspectorInfo = CreateText(contentGo, "Info", SecondaryFontSize,
                 FontStyle.Normal, SubtitleColor, TextAnchor.UpperLeft);
-            _inspectorInfo.horizontalOverflow = HorizontalWrapMode.Wrap;
-            _inspectorInfo.verticalOverflow = VerticalWrapMode.Truncate;
+            _inspectorInfo.enableWordWrapping = true;
+            _inspectorInfo.overflowMode = TextOverflowModes.Truncate;
             Place(_inspectorInfo.rectTransform, 0f, 1f, 0f, 1f,
                 8f, -42f, InspectorWidth - 42f, 60f);
 
@@ -1099,7 +1102,7 @@ namespace StudentAgeEditorPlus.Patches
         }
 
         private static float PreferredInspectorTextHeight(
-            Text text, float minimum, float maximum)
+            TMP_Text text, float minimum, float maximum)
         {
             if (text == null) return minimum;
             float preferred = text.preferredHeight;
@@ -1305,9 +1308,9 @@ namespace StudentAgeEditorPlus.Patches
         {
             Text text = CreateText(parent, "Note", SecondaryFontSize,
                 FontStyle.Normal, color, TextAnchor.UpperLeft);
-            text.text = value ?? string.Empty;
-            text.horizontalOverflow = HorizontalWrapMode.Wrap;
-            text.verticalOverflow = VerticalWrapMode.Truncate;
+            SetSdfText(text, value);
+            text.enableWordWrapping = true;
+            text.overflowMode = TextOverflowModes.Truncate;
             Place(text.rectTransform, 0f, 1f, 0f, 1f,
                 8f, y, InspectorWidth - 42f, height);
             return text;

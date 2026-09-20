@@ -101,22 +101,22 @@ namespace StudentAgeEditorPlus.Patches
                 Fields = new List<FieldDef>
                 {
                     F("id", "ID",
-                        desc: "送礼事件的唯一编号，不可与已有事件重复。",
+                        desc: "送礼事件的唯一编号，请填写未占用的正整数。\n不可与本作品、游戏原版或其它同时启用 Mod 的送礼事件 ID 重复；可以与剧情事件 ID、对白 ID 使用相同数字。",
                         required: true),
                     F("item", "物品ID",
                         desc: "触发此送礼对话的物品，从下拉列表选择。\n列表同时包含物品和书籍，书籍以「（书）」后缀标注。",
                         required: true, range: typeof(ItemCfg)),
                     F("npc", "NPC ID",
-                        desc: "可触发此送礼事件的NPC列表，可填多个，用英文逗号分隔。\n下方对话ID和类型标记均按此列表顺序一一对应。"),
+                        desc: "推荐点击底部「绑定送礼剧情」按姓名添加NPC。\n手填多个NPC用逗号分隔；删除或调整顺序时，已有剧情和物品设置会跟随对应NPC，新添加的NPC需要重新选剧情。\n清空此字段会同时清除所有绑定；保存后该记录不触发送礼对白。"),
                     F("cond", "前提条件",
                         type: CfgPropertyType.Condition,
                         desc: "触发此送礼事件需满足的条件。留空则无条件触发。"),
-                    F("talkId", "对话ID",
-                        desc: "送礼时播放的对话编号，按上方NPC顺序一一对应。\n不同NPC之间用英文分号 ; 分隔；同一NPC的多段对话用英文逗号 , 分隔。\n例如：\n· 一个NPC一段对话：322116001\n· 两个NPC各一段对话：322116001;10103001\n· 一个NPC两段对话：340101001,340101001"),
+                    F("talkId", "对话ID（高级）",
+                        desc: "推荐点击底部「绑定送礼剧情」，按标题选剧情自动回填，无需查号。\n\n手动填写说明：\n· 需填剧情【首句台词ID】（并非事件ID），后续会自动顺着连线播放。\n· 男女共用填 1 个；区分男女主填「男主首句,女主首句」（逗号区分性别，并非播下一句）。\n· 多个 NPC 用英文分号 ; 分隔。"),
                     F("type", "类型标记",
-                        desc: "送礼后物品是否从背包中消失。\n· 0：消失（赠予NPC）\n· 1：不消失\n留空等同于 0。多个NPC时用英文逗号按顺序对应。"),
+                        desc: "送礼后物品是否从背包中消失。\n· 0：消失（赠予NPC，默认）\n· 1：保留（物品不消耗）\n单个NPC时直接通过下拉选择；配置多位NPC时显示手填列表（英文逗号对应顺序），或推荐点击底部「绑定送礼剧情」可视化设置。"),
                     F("redpoint", "红点提示",
-                        desc: "送礼按钮上是否显示红点，提示玩家该物品有特殊送礼对话。\n· 1（默认）：显示\n· 0：不显示",
+                        desc: "送礼按钮上是否显示红点，提示玩家该物品有特殊送礼对话。\n· 1（默认）：显示红点\n· 0：不显示红点",
                         def: 1),
                 },
                 FormatItemName = data =>
@@ -135,60 +135,7 @@ namespace StudentAgeEditorPlus.Patches
                         : itemName;
                     return $"[{cfg.id}]{display}→NPC{npcStr}";
                 },
-                OnRenderPropertyHook = (viewObj, cell, fieldItem) =>
-                {
-                    // 原 Patch D 逻辑：item 字段下拉框追加书籍
-                    if (fieldItem.field.Name != "item") return;
-                    if (!cell.dropdown_value.gameObject.activeSelf) return;
-                    if (Cfg.BookCfgMap == null || Cfg.BookCfgMap.Count == 0) return;
-
-                    var existing = cell.GetKeyObj<List<Dropdown.OptionData>>("options");
-                    if (existing == null) return;
-
-                    var existingIds = new HashSet<int>();
-                    foreach (var opt in existing)
-                        if (opt is ModPropertyOptionData mod) existingIds.Add(mod.id);
-
-                    var nameFields = Traverse.Create(viewObj).Field("nameFields").GetValue<List<string>>();
-
-                    FieldInfo bookNameField = null;
-                    if (nameFields != null)
-                    {
-                        foreach (var nf in nameFields)
-                        {
-                            bookNameField = typeof(BookCfg).GetField(nf);
-                            if (bookNameField != null) break;
-                        }
-                    }
-
-                    int added = 0;
-                    foreach (var entry in Cfg.BookCfgMap)
-                    {
-                        int id = entry.Key;
-                        if (existingIds.Contains(id)) continue;
-                        string name = bookNameField?.GetValue(entry.Value) as string;
-                        existing.Add(new ModPropertyOptionData
-                        {
-                            id = id,
-                            text = $"[{id}]{name ?? id.ToString()}（书）"
-                        });
-                        added++;
-                    }
-
-                    if (added > 0)
-                    {
-                        cell.dropdown_value.ClearOptions();
-                        cell.dropdown_value.AddOptions(existing);
-                        var curSelect = Traverse.Create(viewObj).Field("curSelect").GetValue<object>();
-                        if (curSelect != null)
-                        {
-                            int itemId = (int)fieldItem.field.GetValue(curSelect);
-                            int idx = existing.FindIndex(o => (o as ModPropertyOptionData)?.id == itemId);
-                            if (idx >= 0) cell.dropdown_value.SetValueWithoutNotify(idx);
-                        }
-                        Plugin.Log.LogInfo($"[NativeCfg] 已追加 {added} 本书籍到物品下拉框。");
-                    }
-                },
+                OnRenderPropertyHook = GiftEvtEditorUtil.OnRenderProperty,
             });
         }
 

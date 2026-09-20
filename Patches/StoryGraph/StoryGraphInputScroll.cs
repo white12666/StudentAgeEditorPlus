@@ -1,15 +1,16 @@
 using System;
-using System.Collections.Generic;
+using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using InputField = TMPro.TMP_InputField;
+using Text = TMPro.TextMeshProUGUI;
 
 namespace StudentAgeEditorPlus.Patches
 {
     /// <summary>
-    /// 旧版 UGUI InputField 没有滚轮接口，只会在光标移动时改写内部可见行。
-    /// 这里让正文 Text 保持完整高度并由原输入框的 RectMask2D 裁切，再只接管
-    /// 垂直滚轮和滚动条；点击、选区、拖动光标仍全部交给 InputField。
+    /// 让 TMP 正文保持完整高度并由输入框的 RectMask2D 裁切，再只接管垂直滚轮
+    /// 和滚动条；点击、选区、拖动光标仍全部交给 TMP_InputField。
     /// </summary>
     internal sealed class StoryGraphInputScroll : MonoBehaviour, IScrollHandler
     {
@@ -20,7 +21,7 @@ namespace StudentAgeEditorPlus.Patches
         private const float WheelStep = 34f;
 
         [NonSerialized] private InputField _input;
-        [NonSerialized] private Text _text;
+        [NonSerialized] private TMP_Text _text;
         [NonSerialized] private Scrollbar _scrollbar;
         [NonSerialized] private CanvasGroup _scrollbarCanvas;
         [NonSerialized] private ScrollRect _parentScroll;
@@ -166,8 +167,10 @@ namespace StudentAgeEditorPlus.Patches
                 1f, field.rect.height - TopPadding - BottomPadding);
 
             ConfigureTextRect(textRect, _viewportHeight, 0f);
+            try { _text.ForceMeshUpdate(true, true); }
+            catch { }
             _contentHeight = Mathf.Max(
-                _viewportHeight, Mathf.Ceil(_input.preferredHeight));
+                _viewportHeight, Mathf.Ceil(_text.preferredHeight));
             _maxOffset = Mathf.Max(0f, _contentHeight - _viewportHeight);
             _offset = Mathf.Clamp(_offset, 0f, _maxOffset);
             ConfigureTextRect(textRect, _contentHeight, _offset);
@@ -216,23 +219,24 @@ namespace StudentAgeEditorPlus.Patches
         private void EnsureCaretVisible()
         {
             if (_input == null || _text == null || _maxOffset <= 0f) return;
-            TextGenerator generator = _text.cachedTextGenerator;
-            IList<UILineInfo> lines = generator != null ? generator.lines : null;
-            if (lines == null || lines.Count == 0) return;
+            try { _text.ForceMeshUpdate(true, true); }
+            catch { return; }
+            TMP_TextInfo info = _text.textInfo;
+            if (info == null || info.lineInfo == null || info.lineCount <= 0) return;
 
             int caret = Mathf.Clamp(
                 _input.caretPosition, 0, (_input.text ?? string.Empty).Length);
             int line = 0;
-            for (int i = 1; i < lines.Count; i++)
+            for (int i = 1; i < info.lineCount; i++)
             {
-                if (lines[i].startCharIdx > caret) break;
+                if (info.lineInfo[i].firstCharacterIndex > caret) break;
                 line = i;
             }
 
-            float pixelsPerUnit = Mathf.Max(0.01f, _text.pixelsPerUnit);
-            float firstTop = lines[0].topY / pixelsPerUnit;
-            float lineTop = firstTop - lines[line].topY / pixelsPerUnit;
-            float lineBottom = lineTop + lines[line].height / pixelsPerUnit;
+            float firstTop = info.lineInfo[0].ascender;
+            float lineTop = Mathf.Max(0f, firstTop - info.lineInfo[line].ascender);
+            float lineBottom = Mathf.Max(lineTop,
+                firstTop - info.lineInfo[line].descender);
             float wanted = _offset;
             if (lineTop < _offset)
                 wanted = lineTop;

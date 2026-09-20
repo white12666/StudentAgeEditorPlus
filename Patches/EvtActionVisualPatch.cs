@@ -1553,9 +1553,9 @@ namespace StudentAgeEditorPlus.Patches
                 // cgCfgMap[_id] 必抛 KeyNotFoundException，预览停在半开黑框态（L3-2）。
                 var cgMap = EvtPreviewConfigLoader.LoadCgs(modRoot);
 
-                // audioCfgs 懒加载，先确保加载（内部已含原版合并）
-                t.Method("LoadAudioCfg").GetValue();
-                var audioMap = t.Field("audioCfgs").GetValue<Dictionary<int, AudioCfg>>();
+                // 每次预览读取已保存的音频表，避免新导入 BGM 被窗口旧缓存漏掉。
+                var audioMap = EvtPreviewConfigLoader.LoadAudios(modRoot);
+                t.Field("audioCfgs").SetValue(audioMap);
 
                 // 必须与 ModPreviewTipsView.OnClickOK 一样传满 12 项。尤其第 10 项
                 // ModFaceCfg 决定图片型人物的 3000 自定义表情；若省略，只会回退
@@ -1881,6 +1881,60 @@ namespace StudentAgeEditorPlus.Patches
             catch (Exception e)
             {
                 Plugin.Log.LogError($"[EvtTalkPreviewSelect] {e}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 进入剧情编辑界面时，默认将主角预览性别设为女主（toggle_gender 开启）。
+    /// </summary>
+    [HarmonyPatch(typeof(ModEvtEditView), "OnOpen")]
+    internal static class EvtEditDefaultFemalePreviewPatch
+    {
+        private static void Postfix(ModEvtEditView __instance)
+        {
+            try
+            {
+                if (__instance == null || __instance.toggle_gender == null) return;
+                if (!__instance.toggle_gender.isOn)
+                {
+                    __instance.toggle_gender.isOn = true;
+                }
+                else
+                {
+                    var t = Traverse.Create(__instance);
+                    if (t.Field("gender").GetValue<GenderDefine>() != GenderDefine.Female)
+                    {
+                        t.Method("OnToggleGender", true).GetValue();
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log?.LogError($"[EvtEditDefaultFemalePreview] {e}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 打开事件剧情预览弹窗时，默认将主角预览性别设为女主（toggle_gender 开启）。
+    /// </summary>
+    [HarmonyPatch(typeof(ModPreviewTipsView), "OnOpen")]
+    internal static class ModPreviewTipsDefaultFemalePreviewPatch
+    {
+        private static void Postfix(ModPreviewTipsView __instance)
+        {
+            try
+            {
+                if (__instance == null || __instance.toggle_gender == null) return;
+                if (!__instance.toggle_gender.isOn)
+                {
+                    __instance.toggle_gender.isOn = true;
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log?.LogError($"[ModPreviewTipsDefaultFemalePreview] {e}");
             }
         }
     }
