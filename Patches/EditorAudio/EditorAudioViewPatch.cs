@@ -123,12 +123,13 @@ namespace StudentAgeEditorPlus.Patches
             layout.childControlWidth = layout.childControlHeight = true;
             layout.childForceExpandWidth = layout.childForceExpandHeight = false;
             // 复用原“保存”这一行的高度，而非增加右列高度，720p 不压住性别切换。
-            EditorAudioButton.Create(rect, host, font, false, true);
+            var audio = EditorAudioButton.Create(rect, host, font, false, true);
             original.SetParent(rect, false);
             var saveSize = save.GetComponent<LayoutElement>() ?? save.AddComponent<LayoutElement>();
             saveSize.minWidth = 40f * units;
             saveSize.flexibleWidth = 1f;
             saveSize.preferredHeight = height;
+            audio.FitBeside(rect, saveSize);
         }
     }
 

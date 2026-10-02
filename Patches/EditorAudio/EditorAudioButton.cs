@@ -72,6 +72,10 @@ namespace StudentAgeEditorPlus.Patches
         private bool lastPreview;
         private Canvas canvas;
         private float units;
+        private RectTransform fitRow;
+        private HorizontalLayoutGroup fitLayout;
+        private LayoutElement fitPartner;
+        private float fitRowWidth;
         private static Font nativeFont;
 
         internal static EditorAudioButton Create(Transform parent, RectTransform host, Font font = null,
@@ -125,23 +129,53 @@ namespace StudentAgeEditorPlus.Patches
             return control;
         }
 
+        /// <summary>
+        /// 与“保存”共用一行时调用。行宽放不下最小屏幕尺寸时（低分辨率），“保存”至少保留半行，
+        /// BGM 只用剩下的宽度，放不下文字就只显示图标，避免把“保存”挤出屏幕。
+        /// </summary>
+        internal void FitBeside(RectTransform row, LayoutElement partner)
+        {
+            fitRow = row;
+            fitLayout = row.GetComponent<HorizontalLayoutGroup>();
+            fitPartner = partner;
+            Resize();
+        }
+
         private void LateUpdate()
         {
             if (!ready) return;
             float expected = canvas != null ? Mathf.Max(1f, 1f / Mathf.Max(0.1f, canvas.scaleFactor)) : 1f;
-            if (Mathf.Abs(expected - units) > 0.01f) Resize();
+            if (Mathf.Abs(expected - units) > 0.01f
+                || (fitRow != null && Mathf.Abs(fitRow.rect.width - fitRowWidth) > 0.5f)) Resize();
         }
 
         private void Resize()
         {
-            // 原生 Canvas 在 1080p 也可能是 0.75x；保证点击区至少 88x42 屏幕像素。
+            // 原生 Canvas 在 1080p 也可能是 0.75x；保证点击区至少 88x42 屏幕像素（与“保存”同排时受行宽限制）。
             units = canvas != null ? Mathf.Max(1f, 1f / Mathf.Max(0.1f, canvas.scaleFactor)) : 1f;
-            float width = compact ? 72f : Width;
-            ((RectTransform)transform).sizeDelta = new Vector2(width, Height) * units;
+            float width = (compact ? 72f : Width) * units;
+            bool iconOnly = false;
+            if (fitRow != null)
+            {
+                fitRowWidth = fitRow.rect.width;
+                float spacing = 8f * units;
+                if (fitLayout != null) fitLayout.spacing = spacing;
+                if (fitPartner != null) fitPartner.minWidth = Mathf.Min(40f * units, fitRowWidth * 0.5f);
+                float room = fitRowWidth * 0.5f - spacing;
+                if (fitRowWidth > 0f && room < width)
+                {
+                    width = Mathf.Max(0f, room);
+                    iconOnly = width < 64f * units;
+                }
+            }
+            ((RectTransform)transform).sizeDelta = new Vector2(width, Height * units);
             var layout = GetComponent<LayoutElement>();
-            layout.preferredWidth = layout.minWidth = width * units;
+            layout.preferredWidth = layout.minWidth = width;
             layout.preferredHeight = layout.minHeight = Height * units;
-            icon.rectTransform.anchoredPosition = new Vector2((compact ? 18f : 22f) * units, 0f);
+            label.enabled = !iconOnly;
+            Vector2 iconAnchor = iconOnly ? new Vector2(0.5f, 0.5f) : new Vector2(0f, 0.5f);
+            icon.rectTransform.anchorMin = icon.rectTransform.anchorMax = iconAnchor;
+            icon.rectTransform.anchoredPosition = iconOnly ? Vector2.zero : new Vector2((compact ? 18f : 22f) * units, 0f);
             icon.transform.localScale = Vector3.one * units * (compact ? 0.85f : 1f);
             label.fontSize = Mathf.CeilToInt((compact ? 12f : 14f) * units);
             label.rectTransform.offsetMin = new Vector2((compact ? 34f : 40f) * units, 0f);

@@ -3075,6 +3075,14 @@ namespace StudentAgeEditorPlus.Patches
                 return;
             }
 
+            // 正文播完进入选项界面时，游戏不再读取 nextTalk / nextTalk2 / check
+            //（NewTalkView.DoTextEnd、OnClickSkip 先走 ShowOption），残留的悬空值
+            // 无害；剧情图同样把这些连线标为"游戏中不会执行"。对话自带小游戏时，
+            // 点任一选项都会进入它，nextTalk / nextTalk2 是小游戏出口，照常检查。
+            if (!hasMiniGame
+                && StoryGraphTalkFlow.OptionsIntercept(talk.content, talk.option, stateEventView))
+                return;
+
             ValidateTalkTargetSlots(
                 "对话 " + talk.id + " 的 nextTalk",
                 talk.nextTalk, knownTalkIds, 1, true, issues);
@@ -4260,7 +4268,6 @@ namespace StudentAgeEditorPlus.Patches
             internal string Temp;
             internal string TransactionBackup;
             internal string SwapBackup;
-            internal string UserBackup;
             internal bool Existed;
             internal bool Replaced;
             internal FileFingerprint Expected;
@@ -4901,8 +4908,8 @@ namespace StudentAgeEditorPlus.Patches
                 committedOnDisk = true;
                 try
                 {
-                    PublishUserBackup(talkPlan);
-                    PublishUserBackup(optionPlan);
+                    PublishUserBackup(talkPlan, session.ModRoot);
+                    PublishUserBackup(optionPlan, session.ModRoot);
                 }
                 catch (Exception backupError)
                 {
@@ -4910,8 +4917,9 @@ namespace StudentAgeEditorPlus.Patches
                     // 用户备份发布失败不构成保存失败，更不允许触发回滚。
                     Plugin.Log?.LogWarning(
                         "[StoryGraph.Edit.Save] 新配置已完整提交，"
-                        + "但发布 .storygraph.bak 用户备份失败：" + backupError.Message);
+                        + "但发布用户备份（.storygraph.bak）失败：" + backupError.Message);
                 }
+                MoveLegacyUserBackups(session.ModRoot, talkPlan, optionPlan);
                 DeleteIfExists(journalPath);
                 CleanupTransactionArtifacts(talkPlan);
                 CleanupTransactionArtifacts(optionPlan);
@@ -5012,8 +5020,8 @@ namespace StudentAgeEditorPlus.Patches
 
                 if (journal.Committed)
                 {
-                    PublishRecoveredUserBackup(journal.Talk);
-                    PublishRecoveredUserBackup(journal.Option);
+                    PublishRecoveredUserBackup(modRoot, journal.Talk);
+                    PublishRecoveredUserBackup(modRoot, journal.Option);
                 }
                 else
                 {
@@ -5025,7 +5033,7 @@ namespace StudentAgeEditorPlus.Patches
                     if (IsDeterministicallyUnrecoverable(talkState)
                         || IsDeterministicallyUnrecoverable(optionState))
                     {
-                        QuarantineStaleJournal(path, talkState, optionState);
+                        QuarantineStaleJournal(modRoot, path, talkState, optionState);
                         quarantined = true;
                         return true;
                     }
@@ -5310,7 +5318,6 @@ namespace StudentAgeEditorPlus.Patches
                 Temp = path + ".storygraph.tmp." + transactionId,
                 TransactionBackup = path + ".storygraph.tx." + transactionId + ".bak",
                 SwapBackup = path + ".storygraph.swap." + transactionId + ".bak",
-                UserBackup = path + ".storygraph.bak",
                 Existed = expected != null && expected.Exists,
                 Expected = expected,
             };
@@ -5375,12 +5382,37 @@ namespace StudentAgeEditorPlus.Patches
                 throw new IOException("正式配置写入后指纹不一致，事务将回滚。" );
         }
 
-        private static void PublishUserBackup(FilePlan plan)
+        private static void PublishUserBackup(FilePlan plan, string modRoot)
         {
             if (plan == null || !plan.Existed) return;
             if (!File.Exists(plan.TransactionBackup))
                 throw new FileNotFoundException("事务备份不存在", plan.TransactionBackup);
-            File.Copy(plan.TransactionBackup, plan.UserBackup, true);
+            StoryGraphUserBackup.Publish(plan.TransactionBackup, modRoot, plan.Path);
+        }
+
+        /// <summary>
+        /// 提交后把旧版本留在作品目录里的备份移到本机备份目录；失败只警告，
+        /// 旧文件原样留在原处，上传前清扫仍会处理。
+        /// </summary>
+        private static void MoveLegacyUserBackups(string modRoot, params FilePlan[] plans)
+        {
+            foreach (FilePlan plan in plans)
+            {
+                if (plan == null) continue;
+                try
+                {
+                    string moved = StoryGraphUserBackup.MoveLegacyOut(modRoot, plan.Path);
+                    if (moved != null)
+                        Plugin.Log?.LogInfo(
+                            "[StoryGraph.Edit.Save] 作品目录里旧版本留下的备份已移到 " + moved);
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log?.LogWarning(
+                        "[StoryGraph.Edit.Save] 移出作品目录里的旧备份失败，"
+                        + "文件保留在原处：" + e.Message);
+                }
+            }
         }
 
         private static bool TryRollback(FilePlan plan)
@@ -5508,19 +5540,19 @@ namespace StudentAgeEditorPlus.Patches
             return Path.Combine(directory, name);
         }
 
-        private static void PublishRecoveredUserBackup(JournalFile file)
+        private static void PublishRecoveredUserBackup(string modRoot, JournalFile file)
         {
             if (file == null || !file.Existed || !File.Exists(file.TransactionBackup)) return;
             try
             {
-                File.Copy(file.TransactionBackup, file.Path + ".storygraph.bak", true);
+                StoryGraphUserBackup.Publish(file.TransactionBackup, modRoot, file.Path);
             }
             catch (Exception e)
             {
                 // Committed=true 代表两个正式 JSON 已一致落盘；用户备份发布失败
                 // 不应把一次完整提交误判成待回滚事务并永久阻塞事件加载。
                 Plugin.Log?.LogWarning(
-                    "[StoryGraph.Edit.Recover] 新文件已提交，但发布 .storygraph.bak 失败："
+                    "[StoryGraph.Edit.Recover] 新文件已提交，但发布用户备份（.storygraph.bak）失败："
                     + e.Message);
             }
         }
@@ -5573,7 +5605,7 @@ namespace StudentAgeEditorPlus.Patches
         }
 
         private static void QuarantineStaleJournal(
-            string journalPath,
+            string modRoot, string journalPath,
             JournalFileState talkState, JournalFileState optionState)
         {
             string directory = Path.GetDirectoryName(journalPath) ?? string.Empty;
@@ -5583,13 +5615,17 @@ namespace StudentAgeEditorPlus.Patches
             // 待恢复位置为前提，否则每次打开都会再撞同一份日志。隔离名不以
             // Cfg.json 结尾，不会被 ModCtrl 的 *Cfg.json 通配加载。
             File.Move(journalPath, Path.Combine(directory, staleName));
+            string backupDirectory;
+            try { backupDirectory = StoryGraphUserBackup.DirectoryFor(modRoot); }
+            catch { backupDirectory = StoryGraphUserBackup.DisplayRoot; }
             Plugin.Log?.LogWarning(
                 "[StoryGraph.Edit.Recover] 旧保存事务已确认无法自动恢复，"
                 + "日志已隔离为 " + staleName + " 并放行本次加载。判定："
                 + "TalkCfg.json " + DescribeJournalFileState(talkState)
                 + "；OptionCfg.json " + DescribeJournalFileState(optionState)
-                + "。相关 .storygraph.tx.*.bak 事务备份仍保留在原目录，"
-                + "保存前的版本另见同目录 .storygraph.bak（如存在）。" );
+                + "。相关 .storygraph.tx.*.bak 事务备份仍保留在原目录；"
+                + "保存前的版本另见 " + backupDirectory
+                + "（0.4.22 及更早版本的备份可能仍在原目录的 .storygraph.bak）。" );
             try
             {
                 // 走路由：保存前防御性复查可能在剧情图 Overlay 激活期间触发，

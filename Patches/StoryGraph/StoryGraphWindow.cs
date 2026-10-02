@@ -8358,9 +8358,13 @@ namespace StudentAgeEditorPlus.Patches
                 // 普通表单的删除持久化补丁以“最近一次已保存 ID”为基线；剧情图
                 // 新增/删除成功后立即刷新，确保同一事件窗口里切回普通界面也能删除。
                 ModEvtDeletePersistence.Capture(_view);
+                // 剧情图已把草稿同步进事件编辑器并写盘，此刻的表单内存就是已保存状态。
+                UnsavedEditGuard.Capture(_view);
+                EvtEditorHistory.Get(_view)?.GraphSaved();
                 ClearEditHistories();
                 string message = "已保存 TalkCfg.json 与 OptionCfg.json，并同步回事件编辑器；"
-                                 + "同时保留 .storygraph.bak 和崩溃恢复日志保护。"
+                                 + "保存前的版本备份在本机 " + StoryGraphUserBackup.DisplayRoot
+                                 + "，不会随作品上传，崩溃恢复日志保护照常。"
                                  + "「预览本句」用的是最新内容、随时可看；"
                                  + "只有本局内正式触发该事件走的仍是启动时合并的旧数据，"
                                  + "重启游戏后生效。"

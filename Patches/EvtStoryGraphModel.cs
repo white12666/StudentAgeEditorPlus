@@ -137,6 +137,25 @@ namespace StudentAgeEditorPlus.Patches
         }
     }
 
+    /// <summary>
+    /// 对话正文播完后是否进入选项界面。剧情图建模与保存前预检共用这一判定，
+    /// 两边对"游戏会不会读取 nextTalk"不能各说各话。
+    /// </summary>
+    internal static class StoryGraphTalkFlow
+    {
+        internal static bool OptionsIntercept(
+            string content, IEnumerable<int> optionIds, bool stateEventView)
+        {
+            // StateEvtView 的透传判定是 content.IsEmpty()==IsNullOrEmpty，
+            // 纯空白正文会正常显示并停在选项处；NewTalkView（RefreshTalk）
+            // 用 IsNullOrWhiteSpace，两条路径判定不同。
+            bool contentShown = stateEventView
+                ? !string.IsNullOrEmpty(content)
+                : !string.IsNullOrWhiteSpace(content);
+            return contentShown && optionIds != null && optionIds.Any(id => id != 0);
+        }
+    }
+
     internal static class EvtStoryGraphModelBuilder
     {
         private sealed class DfsFrame
@@ -515,13 +534,8 @@ namespace StudentAgeEditorPlus.Patches
                         + talk.maxoptions + "；图中展示全部候选，游戏每次会随机显示其中 "
                         + talk.maxoptions + " 个。", 16);
                 }
-                // StateEvtView 的透传判定是 content.IsEmpty()==IsNullOrEmpty，
-                // 纯空白正文会正常显示并停在选项处；NewTalkView（RefreshTalk）
-                // 用 IsNullOrWhiteSpace，两条路径判定不同。
-                bool contentShown = context.StateEventView
-                    ? !string.IsNullOrEmpty(talk.content)
-                    : !string.IsNullOrWhiteSpace(talk.content);
-                bool optionsIntercept = contentShown && hasOptionValues;
+                bool optionsIntercept = StoryGraphTalkFlow.OptionsIntercept(
+                    talk.content, optionIds, context.StateEventView);
                 bool hasMiniGame = HasItems(talk.miniGame);
                 if (context.StateEventView && HasItems(talk.check))
                 {

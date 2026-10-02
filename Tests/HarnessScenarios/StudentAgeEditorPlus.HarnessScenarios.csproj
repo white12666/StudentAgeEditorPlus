@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    StudentAge Harness 场景包：在隔离的游戏里验证 EditorPlus 的创作页 BGM 布局和剧情编辑页输入/撤销。
+    它不是 BepInEx 插件，不要放进游戏。运行方法见同目录的 README.md 和 harness.json。
+    EditorPlus 的类型都是 internal，测试通过反射访问，所以不引用 EditorPlus 程序集。
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Version>1.0.0</Version>
+    <AssemblyName>StudentAgeEditorPlus.HarnessScenarios</AssemblyName>
+    <RootNamespace>StudentAgeEditorPlus.HarnessScenarios</RootNamespace>
+    <GameRoot Condition="'$(GameRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\..</GameRoot>
+    <ManagedDir>$(GameRoot)\StudentAge_Data\Managed</ManagedDir>
+    <BepInExCore>$(GameRoot)\BepInEx\core</BepInExCore>
+    <HarnessHome Condition="'$(HarnessHome)' == ''">$(STUDENTAGE_HARNESS_HOME)</HarnessHome>
+    <HarnessCore Condition="'$(HarnessHome)' != ''">$(HarnessHome)\plugin\StudentAgeHarness.Core.dll</HarnessCore>
+    <HarnessCore Condition="'$(HarnessHome)' == ''">$(MSBuildThisFileDirectory)..\..\..\StudentAgeHarness\src\StudentAgeHarness\bin\Release\StudentAgeHarness.Core.dll</HarnessCore>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="StudentAgeHarness.Core"><HintPath>$(HarnessCore)</HintPath><Private>false</Private></Reference>
+    <Reference Include="BepInEx"><HintPath>$(BepInExCore)\BepInEx.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(BepInExCore)\0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp"><HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Newtonsoft.Json"><HintPath>$(ManagedDir)\Newtonsoft.Json.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.TextMeshPro"><HintPath>$(ManagedDir)\Unity.TextMeshPro.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(ManagedDir)\UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.AudioModule"><HintPath>$(ManagedDir)\UnityEngine.AudioModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(ManagedDir)\UnityEngine.IMGUIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(ManagedDir)\UnityEngine.TextRenderingModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UI"><HintPath>$(ManagedDir)\UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UIModule"><HintPath>$(ManagedDir)\UnityEngine.UIModule.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+{
+  "plugins": ["../../bin/Release"],
+  "packs": ["bin/Release/netstandard2.0/StudentAgeEditorPlus.HarnessScenarios.dll"],
+  "expectPlugins": ["com.studentage.editorplus"],
+  "scenarios": ["startup", "tag:editorplus"],
+  "resolution": "1920x1080",
+  "timeoutSec": 900,
+  "workshopMods": []
+}

@@ -4,6 +4,7 @@ using Config;
 using GenUI.Mod;
 using HarmonyLib;
 using Sdk;
+using TMPro;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using View.Mod;
@@ -12,9 +13,16 @@ namespace StudentAgeEditorPlus.Patches
 {
     internal static class GiftFormInput
     {
-        internal static void CommitFocused(ModNormalEditView view)
+        internal static void CommitFocused(BaseView view)
         {
             var selected = EventSystem.current?.currentSelectedGameObject;
+            var tmp = selected != null ? selected.GetComponentInParent<TMP_InputField>() : null;
+            if (tmp != null && tmp.isFocused && tmp.transform.IsChildOf(view.gameObject.transform))
+            {
+                tmp.DeactivateInputField();
+                EventSystem.current?.SetSelectedGameObject(null);
+                return;
+            }
             var input = selected != null ? selected.GetComponentInParent<InputField>() : null;
             if (input != null && input.isFocused && input.transform.IsChildOf(view.gameObject.transform))
             {

@@ -5,6 +5,10 @@ param(
 
     [switch]$SkipBuild,
 
+    # 额外附带旧版 workshop-plugin.json + BepInEx/plugins 结构，供尚未更新到
+    # Workshop Bridge 0.5.0 的 1.90 玩家过渡使用。游戏 1.94 内置加载器只读取 plugins/。
+    [switch]$IncludeLegacyLayout,
+
     [string]$OutputDirectory = (Join-Path $PSScriptRoot "artifacts")
 )
 
@@ -143,26 +147,36 @@ Reset-Directory $editorStage
 try {
     Write-Host "[2/4] 组装 EditorPlus 发布目录..." -ForegroundColor Cyan
 
-    Copy-RequiredFile $marker (Join-Path $editorStage "workshop-plugin.json")
+    # 官方工坊格式（游戏 1.94+ 内置加载器，以及 Workshop Bridge 0.5.0+）：
+    # <工坊项目>/plugins/<插件目录>/<插件>.dll
     Copy-RequiredFile (Join-Path $repoRoot "README.md") (Join-Path $editorStage "README.md")
     Copy-RequiredFile $fixGuide (Join-Path $editorStage "修复说明.md")
     Copy-RequiredFile $distributionGuide (Join-Path $editorStage "发布与依赖.md")
     Copy-RequiredFile $license (Join-Path $editorStage "LICENSE")
     Copy-RequiredFile $editorDll (Join-Path $editorStage `
-        "BepInEx\plugins\StudentAgeEditorPlus\StudentAgeEditorPlus.dll")
+        "plugins\StudentAgeEditorPlus\StudentAgeEditorPlus.dll")
+    $requiredEntries = @(
+        "README.md",
+        "修复说明.md",
+        "发布与依赖.md",
+        "LICENSE",
+        "plugins/StudentAgeEditorPlus/StudentAgeEditorPlus.dll"
+    )
+    if ($IncludeLegacyLayout) {
+        Copy-RequiredFile $marker (Join-Path $editorStage "workshop-plugin.json")
+        Copy-RequiredFile $editorDll (Join-Path $editorStage `
+            "BepInEx\plugins\StudentAgeEditorPlus\StudentAgeEditorPlus.dll")
+        $requiredEntries += @(
+            "workshop-plugin.json",
+            "BepInEx/plugins/StudentAgeEditorPlus/StudentAgeEditorPlus.dll"
+        )
+    }
 
     $editorPackage = Join-Path $OutputDirectory `
         "StudentAgeEditorPlus-v$editorVersion.zip"
 
     Write-Host "[3/4] 生成并校验压缩包..." -ForegroundColor Cyan
-    New-VerifiedZip $editorStage $editorPackage @(
-        "workshop-plugin.json",
-        "README.md",
-        "修复说明.md",
-        "发布与依赖.md",
-        "LICENSE",
-        "BepInEx/plugins/StudentAgeEditorPlus/StudentAgeEditorPlus.dll"
-    )
+    New-VerifiedZip $editorStage $editorPackage $requiredEntries
     Write-Host "[4/4] 写入 SHA-256 校验值..." -ForegroundColor Cyan
     $hashFile = Join-Path $OutputDirectory "SHA256SUMS.txt"
     $packages = @($editorPackage)

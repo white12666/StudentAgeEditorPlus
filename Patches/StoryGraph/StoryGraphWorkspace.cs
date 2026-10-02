@@ -465,7 +465,7 @@ namespace StudentAgeEditorPlus.Patches
             return changed;
         }
 
-        private static string StableHash(string value)
+        internal static string StableHash(string value)
         {
             byte[] bytes = Encoding.UTF8.GetBytes(value ?? string.Empty);
             using (SHA256 sha = SHA256.Create())

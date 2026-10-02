@@ -75,6 +75,8 @@ namespace StudentAgeEditorPlus.Patches
     /// SteamUGC.SetItemContent（SteamPlatform.UpdateMod:646），事务临时文件与
     /// .bak（内含上一版剧情全文）否则会随工坊分发给所有订阅者。
     /// SteamCreateMod 成功后同样进入 SteamUploadMod，两条路径都被覆盖。
+    /// 0.4.23 起用户备份已写到 BepInEx/config（StoryGraphUserBackup），这里遇到的
+    /// .storygraph.bak 只会是旧版本留在作品目录里的，仍需转移。
     /// </summary>
     [HarmonyPatch(typeof(ModPageUploadView), "SteamUploadMod")]
     internal static class ModUploadCleanupPatch
